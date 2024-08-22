@@ -13,3 +13,5 @@ class User(Base):
 
     #relationships
     files = relationship("File", back_populates="owner")
+    agents = relationship("Agent", back_populates="user")
+    sessions = relationship("Session", back_populates="user")

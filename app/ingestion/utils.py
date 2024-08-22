@@ -1,5 +1,6 @@
-import chromadb
-import chromadb.utils.embedding_functions as embedding_functions
+import pymongo
+from pymongo import MongoClient, ASCENDING
+from bson.son import SON
 from typing import List, Dict
 import tempfile
 import os
@@ -10,6 +11,7 @@ from bs4 import BeautifulSoup
 import nltk
 from nltk.tokenize import sent_tokenize
 import mimetypes
+from sentence_transformers import SentenceTransformer
 
 # Download NLTK data (run this once)
 nltk.download('punkt')
@@ -17,57 +19,46 @@ nltk.download('punkt')
 # Create a temporary directory
 temp_dir = tempfile.mkdtemp()
 
-chroma_client = chromadb.PersistentClient(path=os.path.join(temp_dir, "chroma"))
+# MongoDB connection
+client = MongoClient('mongodb://localhost:27017/')
+db = client['document_db']
 
 class Ingestion:
     def __init__(self):
         self.collection = None
-        self.embed_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-mpnet-base-v2"
-        )
+        self.model = SentenceTransformer('all-mpnet-base-v2')
 
     def create_collection(self, collection_name):
-        self.collection = chroma_client.create_collection(name=collection_name, embedding_function=self.embed_ef)
+        self.collection = db[collection_name]
+        # Create an ascending index on the embedding field
+        self.collection.create_index([("embedding", ASCENDING)], background=True)
         return self.collection
 
     def get_or_create_collection(self, collection_name):
-        try:
-            self.collection = chroma_client.get_collection(name=collection_name, embedding_function=self.embed_ef)
-            return self.collection
-        except Exception:
-            self.collection = chroma_client.create_collection(name=collection_name, embedding_function=self.embed_ef)
-            return self.collection
-
-
-    def process_document(self, file_path: str) -> str:
-        if file_path.endswith('.pdf'):
-            reader = PdfReader(file_path)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
-            return text
-        else:
-            with open(file_path, 'r', encoding='utf-8') as file:
-                return file.read()
+        self.collection = db[collection_name]
+        if collection_name not in db.list_collection_names():
+            # Create an ascending index on the embedding field
+            self.collection.create_index([("embedding", ASCENDING)], background=True)
+        return self.collection
 
     def clean_text(self, text: str) -> str:
-            # Preserve URLs
-            url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
-            urls = re.findall(url_pattern, text)
-            for i, url in enumerate(urls):
-                text = text.replace(url, f'[URL{i}]')
+        # Preserve URLs
+        url_pattern = r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+        urls = re.findall(url_pattern, text)
+        for i, url in enumerate(urls):
+            text = text.replace(url, f'[URL{i}]')
 
-            # Remove special characters except periods, commas, and hyphens
-            text = re.sub(r'[^\w\s.,;:?!-]', '', text)
+        # Remove special characters except periods, commas, and hyphens
+        text = re.sub(r'[^\w\s.,;:?!-]', '', text)
 
-            # Remove extra whitespace
-            text = re.sub(r'\s+', ' ', text).strip()
+        # Remove extra whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
 
-            # Restore URLs
-            for i, url in enumerate(urls):
-                text = text.replace(f'[URL{i}]', url)
+        # Restore URLs
+        for i, url in enumerate(urls):
+            text = text.replace(f'[URL{i}]', url)
 
-            return text
+        return text
 
     def chunk_text(self, text: str, max_chunk_size: int = 1000) -> List[str]:
         sentences = sent_tokenize(text)
@@ -89,25 +80,33 @@ class Ingestion:
     def add_documents(self, documents: List[str], ids: List[str], metadatas: List[Dict] = None):
         if metadatas is None:
             metadatas = [{}] * len(documents)
-        self.collection.upsert(
-            documents=documents,
-            ids=ids,
-            metadatas=metadatas
-        )
+
+        embeddings = self.model.encode(documents)
+
+        for doc, id, metadata, embedding in zip(documents, ids, metadatas, embeddings):
+            self.collection.update_one(
+                {'_id': id},
+                {'$set': {
+                    'text': doc,
+                    'metadata': metadata,
+                    'embedding': embedding.tolist()
+                }},
+                upsert=True
+            )
 
     def process_document(self, file_path: str) -> str:
-            mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type, _ = mimetypes.guess_type(file_path)
 
-            if mime_type == 'application/pdf':
-                return self.process_pdf(file_path)
-            elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-                return self.process_docx(file_path)
-            elif mime_type == 'text/plain':
-                return self.process_txt(file_path)
-            elif mime_type == 'text/html':
-                return self.process_html(file_path)
-            else:
-                raise ValueError(f"Unsupported file type: {mime_type}")
+        if mime_type == 'application/pdf':
+            return self.process_pdf(file_path)
+        elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+            return self.process_docx(file_path)
+        elif mime_type == 'text/plain':
+            return self.process_txt(file_path)
+        elif mime_type == 'text/html':
+            return self.process_html(file_path)
+        else:
+            raise ValueError(f"Unsupported file type: {mime_type}")
 
     def process_pdf(self, file_path: str) -> str:
         reader = PdfReader(file_path)
@@ -143,13 +142,45 @@ class Ingestion:
         except Exception as e:
             print(f"Error processing file {file_path} for user {user_id}: {str(e)}")
 
-    def query(self, query_text: str, user_id: str, n_results: int = 2):
-        results = self.collection.query(
-            query_texts=[query_text],
-            n_results=n_results,
-            where={"user_id": user_id}  # Filter by user_id
-        )
-        return results
+    def query(self, query_text: str, user_id: str, n_results: int = 10):
+            query_embedding = self.model.encode([query_text])[0].tolist()
+
+            pipeline = [
+                {
+                    '$match': {
+                        'metadata.user_id': user_id
+                    }
+                },
+                {
+                    '$addFields': {
+                        'similarity': {
+                            '$reduce': {
+                                'input': {'$zip': {'inputs': ['$embedding', query_embedding]}},
+                                'initialValue': 0,
+                                'in': {
+                                    '$add': ['$$value', {'$multiply': [{'$arrayElemAt': ['$$this', 0]}, {'$arrayElemAt': ['$$this', 1]}]}]
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    '$sort': SON([('similarity', -1)])
+                },
+                {
+                    '$limit': n_results
+                },
+                {
+                    '$project': {
+                        'text': 1,
+                        'metadata': 1,
+                        'similarity': 1
+                    }
+                }
+            ]
+
+            results = self.collection.aggregate(pipeline)
+            return list(results)
 
     def delete_collection(self, collection_name):
-        chroma_client.delete_collection(name=collection_name)
+        db.drop_collection(collection_name)
