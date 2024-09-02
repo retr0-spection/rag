@@ -8,8 +8,15 @@ from app.models import models
 from sqlalchemy.orm import Session
 import logging
 import os
+import nltk
 
 logging.getLogger('passlib').setLevel(logging.ERROR)
+
+
+
+nltk.download('stopwords')
+# Download NLTK data (run this once)
+nltk.download('punkt')
 
 app = FastAPI()
 

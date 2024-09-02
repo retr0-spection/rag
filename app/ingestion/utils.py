@@ -12,9 +12,10 @@ import nltk
 from nltk.tokenize import sent_tokenize
 import mimetypes
 from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-# Download NLTK data (run this once)
-nltk.download('punkt')
+
 
 # Create a temporary directory
 temp_dir = tempfile.mkdtemp()
@@ -24,21 +25,25 @@ client = MongoClient('mongodb://localhost:27017/')
 db = client['document_db']
 
 class Ingestion:
-    def __init__(self):
-        self.collection = None
+    def __init__(self, collection_name="embeddings"):
+        self.collection = db[collection_name]
+        if collection_name not in db.list_collection_names():
+            # Create an ascending index on the embedding field
+            self.collection.create_index([("embeddings", ASCENDING)], background=True)
         self.model = SentenceTransformer('all-mpnet-base-v2')
+        self.tfidf_vectorizer = TfidfVectorizer()
 
     def create_collection(self, collection_name):
         self.collection = db[collection_name]
         # Create an ascending index on the embedding field
-        self.collection.create_index([("embedding", ASCENDING)], background=True)
+        self.collection.create_index([("embeddings", ASCENDING)], background=True)
         return self.collection
 
     def get_or_create_collection(self, collection_name):
         self.collection = db[collection_name]
         if collection_name not in db.list_collection_names():
             # Create an ascending index on the embedding field
-            self.collection.create_index([("embedding", ASCENDING)], background=True)
+            self.collection.create_index([("embeddings", ASCENDING)], background=True)
         return self.collection
 
     def clean_text(self, text: str) -> str:
@@ -142,45 +147,104 @@ class Ingestion:
         except Exception as e:
             print(f"Error processing file {file_path} for user {user_id}: {str(e)}")
 
-    def query(self, query_text: str, user_id: str, n_results: int = 10):
-            query_embedding = self.model.encode([query_text])[0].tolist()
+    def query(self, query_text: str, user_id: str, n_results: int = 10, relevance_threshold: float = 0.5):
+        query_embedding = self.model.encode([query_text])[0].tolist()
 
-            pipeline = [
-                {
-                    '$match': {
-                        'metadata.user_id': user_id
-                    }
-                },
-                {
-                    '$addFields': {
-                        'similarity': {
-                            '$reduce': {
-                                'input': {'$zip': {'inputs': ['$embedding', query_embedding]}},
-                                'initialValue': 0,
-                                'in': {
-                                    '$add': ['$$value', {'$multiply': [{'$arrayElemAt': ['$$this', 0]}, {'$arrayElemAt': ['$$this', 1]}]}]
-                                }
+        pipeline = [
+            {
+                '$match': {
+                    'metadata.user_id': user_id
+                }
+            },
+            {
+                '$addFields': {
+                    'similarity': {
+                        '$reduce': {
+                            'input': {'$zip': {'inputs': ['$embedding', query_embedding]}},
+                            'initialValue': 0,
+                            'in': {
+                                '$add': ['$$value', {'$multiply': [{'$arrayElemAt': ['$$this', 0]}, {'$arrayElemAt': ['$$this', 1]}]}]
                             }
                         }
                     }
-                },
-                {
-                    '$sort': SON([('similarity', -1)])
-                },
-                {
-                    '$limit': n_results
-                },
-                {
-                    '$project': {
-                        'text': 1,
-                        'metadata': 1,
-                        'similarity': 1
-                    }
                 }
-            ]
+            },
+            {
+                       '$match': {
+                           'similarity': {'$gte': relevance_threshold}
+                       }
+                   },
+            {
+                '$sort': SON([('similarity', -1)])
+            },
+            {
+                '$limit': n_results
+            },
+            {
+                '$project': {
+                    'text': 1,
+                    'metadata': 1,
+                    'similarity': 1
+                }
+            }
+        ]
 
-            results = self.collection.aggregate(pipeline)
-            return list(results)
+        results = self.collection.aggregate(pipeline)
+        return list(results)
+
+    def calculate_relevance(self, query: str, user_id: str) -> float:
+        # Fetch all documents for the user
+        user_documents = self.collection.find({'metadata.user_id': user_id})
+
+        if not user_documents:
+            return 0.0
+
+        # Extract text from documents
+        document_texts = [doc['text'] for doc in user_documents]
+
+        if len(document_texts) == 0:
+            return 0.0
+
+        # Fit and transform the document texts
+        document_vectors = self.tfidf_vectorizer.fit_transform(document_texts)
+
+        # Transform the query
+        query_vector = self.tfidf_vectorizer.transform([query])
+
+        # Calculate cosine similarity
+        similarities = cosine_similarity(query_vector, document_vectors)
+
+
+        return similarities.max()
+
+    def get_all_documents(self, user_id: str) -> List[Dict]:
+        return list(self.collection.find({'metadata.user_id': user_id}))
+
+    def delete_document(self, document_id: str, user_id: str) -> bool:
+            """
+            Delete a specific document from the collection.
+
+            Args:
+                document_id (str): The ID of the document to delete.
+                user_id (str): The ID of the user who owns the document.
+
+            Returns:
+                bool: True if the document was successfully deleted, False otherwise.
+            """
+            if not self.collection:
+                raise ValueError("Collection not initialized. Call get_or_create_collection first.")
+
+            result = self.collection.delete_one({
+                '_id': document_id,
+                'metadata.user_id': user_id
+            })
+
+            if result.deleted_count > 0:
+                print(f"Document {document_id} successfully deleted for user {user_id}")
+                return True
+            else:
+                print(f"Document {document_id} not found for user {user_id}")
+                return False
 
     def delete_collection(self, collection_name):
         db.drop_collection(collection_name)
