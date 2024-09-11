@@ -134,7 +134,7 @@ def send_message(params: SendMessageParams, db: Session = Depends(get_db), user 
     )
 
     db.add(user_message)
-    if context:
+    if len(context) > 0:
         context_message = Message(
             session_id=chat_session.id,
             sender='context',

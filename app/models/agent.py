@@ -12,6 +12,7 @@ class Agent(Base):
     name = Column(String(100), nullable=False)
     agent_type = Column(String(50), nullable=False, default='chatbot')  # e.g., 'chatbot', 'recommendation', 'nlp'
     user_id = Column(String, ForeignKey('users.id'))  # Assuming you track users by an ID or handle
+    # project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     configuration = Column(JSON, nullable=False)  # stores agent-specific configuration
     description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
@@ -21,6 +22,7 @@ class Agent(Base):
     knowledge_bases = relationship('AgentKnowledgeBaseAssociation', back_populates='agent')
     sessions = relationship('Session', back_populates='agent')
     user = relationship("User", back_populates="agents")
+    # project = relationship("Project", back_populates="agents")
 
     def __repr__(self):
         return f"<Agent(name={self.name}, type={self.agent_type})>"

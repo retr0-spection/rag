@@ -85,3 +85,18 @@ def read_user_files(user_id: int,user = Depends(auth_dependency), skip: int = 0,
         return files
     else:
         raise HTTPException(status_code=403, detail='Unauthorised')
+
+@router.delete("/files/{file_id}", responses={200:{'description':'Success'}, 400:{'description':'Bad Request'}})
+def delete_file(file_id: int, user = Depends(auth_dependency),db: Session = Depends(get_db)):
+    file = db.query(models.File).filter(models.File.owner_id == user.id, models.File.id == file_id).first()
+    # Loop through the files and delete them one by one
+    #
+    # first remove from vector db
+    if file:
+        ingestion = Ingestion()
+        ingestion.delete_document(file.file_path, user.id)
+        db.delete(file)
+        db.commit()
+        return {'message':'file deleted'}
+    else:
+        raise HTTPException(status_code=400, detail='Bad Request')

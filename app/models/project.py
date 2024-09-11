@@ -12,3 +12,5 @@ class Project(Base):
     description = Column(String, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="projects")
+
+    # agents = relationship("Agent", back_populates="project")

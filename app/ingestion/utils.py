@@ -220,30 +220,27 @@ class Ingestion:
     def get_all_documents(self, user_id: str) -> List[Dict]:
         return list(self.collection.find({'metadata.user_id': user_id}))
 
-    def delete_document(self, document_id: str, user_id: str) -> bool:
+    def delete_document(self, source, user_id: str) -> bool:
             """
             Delete a specific document from the collection.
 
             Args:
-                document_id (str): The ID of the document to delete.
+                source (str): The ID of the document to delete.
                 user_id (str): The ID of the user who owns the document.
 
             Returns:
                 bool: True if the document was successfully deleted, False otherwise.
             """
-            if not self.collection:
-                raise ValueError("Collection not initialized. Call get_or_create_collection first.")
-
-            result = self.collection.delete_one({
-                '_id': document_id,
-                'metadata.user_id': user_id
+            result = self.collection.delete_many({
+                'metadata.user_id': user_id,
+                'metadata.source':source
             })
 
             if result.deleted_count > 0:
-                print(f"Document {document_id} successfully deleted for user {user_id}")
+                print(f"Document {source} successfully deleted for user {user_id}")
                 return True
             else:
-                print(f"Document {document_id} not found for user {user_id}")
+                print(f"Document {source} not found for user {user_id}")
                 return False
 
     def delete_collection(self, collection_name):

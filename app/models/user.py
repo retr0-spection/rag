@@ -16,3 +16,4 @@ class User(Base):
     agents = relationship("Agent", back_populates="user")
     sessions = relationship("Session", back_populates="user")
     api_keys = relationship("APIKey", back_populates="user")
+    projects = relationship("Project", back_populates="owner")

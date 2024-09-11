@@ -14,6 +14,9 @@ class AgentConfig(BaseModel):
     prompt: str
     llm: str
 
+    class Config:
+        orm_mode = True
+
 
 class AgentCreate(BaseModel):
     name: str
@@ -21,7 +24,7 @@ class AgentCreate(BaseModel):
     configuration: AgentConfig
 
     class Config:
-            orm_mode = True
+        orm_mode = True
 
 class AgentUpdate(BaseModel):
     name: str
@@ -31,6 +34,8 @@ class AgentUpdate(BaseModel):
 class AgentResponse(BaseModel):
     id: int
     name: str
+    agent_type: str
+    configuration: AgentConfig
 
     class Config:
         orm_mode = True  # This allows SQLAlchemy models to be converted to Pydantic models
