@@ -47,7 +47,7 @@ jobs:
 
       - name: Run Alembic Migrations
         run: |
-          flyctl ssh console -C "alembic revision --message "Your migration message"; alembic upgrade head"
+          flyctl ssh console -C "alembic upgrade head"
 
       - name: Deploy to Fly.io
         run: flyctl deploy --remote-only
