@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 import logging
 import os
 import nltk
+from fastapi.middleware.cors import CORSMiddleware
 
 logging.getLogger('passlib').setLevel(logging.ERROR)
 
@@ -19,6 +20,20 @@ nltk.download('stopwords')
 nltk.download('punkt')
 
 app = FastAPI()
+origins = [
+    "http://localhost",
+    "http://localhost:8080",
+    "http://localhost:8080",
+    "http://localhost:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 

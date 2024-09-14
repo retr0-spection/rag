@@ -14,8 +14,7 @@ import mimetypes
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-
-
+from fuzzywuzzy import fuzz
 
 # Create a temporary directory
 temp_dir = tempfile.mkdtemp()
@@ -32,6 +31,7 @@ class Ingestion:
             self.collection.create_index([("embeddings", ASCENDING)], background=True)
         self.model = SentenceTransformer('all-mpnet-base-v2')
         self.tfidf_vectorizer = TfidfVectorizer()
+        self.file_name_vectorizer = TfidfVectorizer()
 
     def create_collection(self, collection_name):
         self.collection = db[collection_name]
@@ -139,11 +139,19 @@ class Ingestion:
             cleaned_text = self.clean_text(raw_text)
             chunks = self.chunk_text(cleaned_text)
 
-            # Incorporate user_id into IDs and metadata
-            ids = [f"{user_id}_{os.path.basename(file_path)}_{i}" for i in range(len(chunks))]
-            metadatas = [{"user_id": user_id, "source": file_path, "chunk": i} for i in range(len(chunks))]
+            file_name = os.path.basename(file_path)
+            ids = [f"{user_id}_{file_name}_{i}" for i in range(len(chunks))]
+            metadatas = [{
+                "user_id": user_id,
+                "source": file_path,
+                "file_name": file_name,
+                "chunk": i
+            } for i in range(len(chunks))]
 
             self.add_documents(chunks, ids, metadatas)
+
+            # Add file name to TF-IDF vectorizer
+            self.file_name_vectorizer.fit([file_name])
         except Exception as e:
             print(f"Error processing file {file_path} for user {user_id}: {str(e)}")
 
@@ -170,10 +178,10 @@ class Ingestion:
                 }
             },
             {
-                       '$match': {
-                           'similarity': {'$gte': relevance_threshold}
-                       }
-                   },
+                '$match': {
+                    'similarity': {'$gte': relevance_threshold}
+                }
+            },
             {
                 '$sort': SON([('similarity', -1)])
             },
@@ -191,6 +199,40 @@ class Ingestion:
 
         results = self.collection.aggregate(pipeline)
         return list(results)
+
+    def query_file_names(self, query_str: str, user_id: str, threshold: float = 0.5) -> List[Dict]:
+        all_docs = self.get_all_documents(user_id)
+
+        if not all_docs:
+            return []  # Return an empty list if there are no documents
+
+        file_names = [doc['metadata']['file_name'] for doc in all_docs]
+
+        # Check if the vectorizer is fitted, if not, fit it
+        if not hasattr(self.file_name_vectorizer, 'vocabulary_'):
+            self.file_name_vectorizer = TfidfVectorizer()
+            self.file_name_vectorizer.fit(file_names)
+
+        # Calculate TF-IDF similarity
+        tfidf_matrix = self.file_name_vectorizer.transform(file_names)
+        query_vector = self.file_name_vectorizer.transform([query_str])
+        tfidf_similarities = cosine_similarity(query_vector, tfidf_matrix)[0]
+
+        # Calculate fuzzy match ratios
+        fuzzy_ratios = [fuzz.partial_ratio(query_str.lower(), name.lower()) / 100 for name in file_names]
+
+        # Combine TF-IDF and fuzzy matching scores
+        combined_scores = [(tfidf + fuzzy) / 2 for tfidf, fuzzy in zip(tfidf_similarities, fuzzy_ratios)]
+
+        # Filter and sort results
+        results = [
+            {'text': doc['text'], 'metadata': doc['metadata'], 'score': score, 'similarity':score}
+            for doc, score in zip(all_docs, combined_scores)
+            if score > threshold
+        ]
+        results.sort(key=lambda x: x['score'], reverse=True)
+
+        return results
 
     def calculate_relevance(self, query: str, user_id: str) -> float:
         # Fetch all documents for the user
@@ -214,34 +256,44 @@ class Ingestion:
         # Calculate cosine similarity
         similarities = cosine_similarity(query_vector, document_vectors)
 
-
         return similarities.max()
 
     def get_all_documents(self, user_id: str) -> List[Dict]:
         return list(self.collection.find({'metadata.user_id': user_id}))
 
     def delete_document(self, source, user_id: str) -> bool:
-            """
-            Delete a specific document from the collection.
+        result = self.collection.delete_many({
+            'metadata.user_id': user_id,
+            'metadata.source': source
+        })
 
-            Args:
-                source (str): The ID of the document to delete.
-                user_id (str): The ID of the user who owns the document.
-
-            Returns:
-                bool: True if the document was successfully deleted, False otherwise.
-            """
-            result = self.collection.delete_many({
-                'metadata.user_id': user_id,
-                'metadata.source':source
-            })
-
-            if result.deleted_count > 0:
-                print(f"Document {source} successfully deleted for user {user_id}")
-                return True
-            else:
-                print(f"Document {source} not found for user {user_id}")
-                return False
+        if result.deleted_count > 0:
+            print(f"Document {source} successfully deleted for user {user_id}")
+            return True
+        else:
+            print(f"Document {source} not found for user {user_id}")
+            return False
 
     def delete_collection(self, collection_name):
         db.drop_collection(collection_name)
+
+    def get_document_chunks(self, document_name: str, user_id: str) -> List[Dict]:
+            """
+            Retrieve all chunks for a specific document name and user ID.
+
+            Args:
+                document_name (str): The name of the document to retrieve chunks for.
+                user_id (str): The ID of the user who owns the document.
+
+            Returns:
+                List[Dict]: A list of dictionaries, each containing a chunk's content and metadata.
+            """
+            chunks = self.collection.find({
+                'metadata.user_id': user_id,
+                'metadata.file_name': document_name
+            }).sort([('metadata.chunk', ASCENDING)])
+
+            return [{
+                'content': chunk['text'],
+                'metadata': chunk['metadata']
+            } for chunk in chunks]

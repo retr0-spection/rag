@@ -47,6 +47,6 @@ def authenticate_user(user: UserInputBase, db: db_dependency):
         raise HTTPException(status_code=403, detail='incorrect user/password')
 
 @router.post("/renew")
-def renew(token: str, user = Depends(auth_dependency)):
+def renew(token: str):
     new_token = jwt_manager.renew_token(token=token)
     return {"access_token": new_token}

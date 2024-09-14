@@ -78,15 +78,13 @@ def upload_file(file: UploadFile = File(...), user = Depends(auth_dependency), d
 
     return db_file
 
-@router.get("/users/{user_id}/files/", response_model=List[FileUploadResponse], responses={200:{'description':'Success'}, 403:{'description':'Unauthorised'}})
-def read_user_files(user_id: int,user = Depends(auth_dependency), skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    if user_id == user.id:
-        files = db.query(models.File).filter(models.File.owner_id == user_id).offset(skip).limit(limit).all()
-        return files
-    else:
-        raise HTTPException(status_code=403, detail='Unauthorised')
+@router.get("/file", response_model=List[FileUploadResponse], responses={200:{'description':'Success'}, 403:{'description':'Unauthorised'}})
+def read_user_files(user = Depends(auth_dependency), skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    files = db.query(models.File).filter(models.File.owner_id == user.id).offset(skip).limit(limit).all()
+    return files
 
-@router.delete("/files/{file_id}", responses={200:{'description':'Success'}, 400:{'description':'Bad Request'}})
+
+@router.delete("/file/{file_id}", responses={200:{'description':'Success'}, 400:{'description':'Bad Request'}})
 def delete_file(file_id: int, user = Depends(auth_dependency),db: Session = Depends(get_db)):
     file = db.query(models.File).filter(models.File.owner_id == user.id, models.File.id == file_id).first()
     # Loop through the files and delete them one by one

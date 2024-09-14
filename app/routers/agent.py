@@ -35,7 +35,7 @@ class AgentResponse(BaseModel):
     id: int
     name: str
     agent_type: str
-    configuration: AgentConfig
+    # configuration: AgentConfig
 
     class Config:
         orm_mode = True  # This allows SQLAlchemy models to be converted to Pydantic models
