@@ -73,12 +73,12 @@ resource "fly_machine" "fastapi_machine" {
 }
 
 variable "db_url" {
-  type = stirng
+  type = string
   description = "DB url"
   }
 
 variable "groq_api" {
-  type = stirng
+  type = string
   description = "GROQ API"
 }
 
