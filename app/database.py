@@ -14,6 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     DATABASE_URL: str
     DEBUG: str
+    GROQ_API: str
 
     model_config = SettingsConfigDict(env_file=".env")
 
@@ -23,7 +24,7 @@ def get_settings():
     return Settings()
 
 
-SQLALCHEMY_DATABASE_URL =  "sqlite:///./sql_app.db" if int(get_settings().DEBUG) else "postgres://rag_muddy_fog_9690:f5yr0NFXEEB39OL@posidon.flycast:5432/rag_muddy_fog_9690?sslmode=disable"
+SQLALCHEMY_DATABASE_URL =  get_settings().DATABASE_URL
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}

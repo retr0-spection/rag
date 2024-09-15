@@ -1,3 +1,4 @@
+from app.models.contexthistory import ContextHistory
 from app.utils.agents import setup_multi_agent_system
 from fastapi import APIRouter, Depends, HTTPException, Body
 from fastapi.responses import StreamingResponse
@@ -6,7 +7,7 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import List, Optional, Dict
 from app.utils.auth import auth_dependency
-from app.database import get_db
+from app.database import get_db, get_settings
 from app.models.models import Agent, Session as ChatSession, Message
 from app.ingestion.utils import Ingestion
 from langchain_core.prompts import PromptTemplate
@@ -23,8 +24,7 @@ from app.utils.agents import setup_multi_agent_system
 
 router = APIRouter(tags=["chat"])
 
-GROQ_API = "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"
-chats = {}
+GROQ_API = get_settings().GROQ_API
 FILE_MATCH_THRESHOLD = 0.7
 RELEVANCE_THRESHOLD = 0.2
 
@@ -140,9 +140,6 @@ def end_chat_session(session_id: int, db: Session = Depends(get_db)):
     chat_session.end_time = datetime.utcnow()
     db.commit()
 
-    # Optionally, clear the in-memory chat history
-    if session_id in chats:
-        del chats[session_id]
 
     return {"message": "Chat session ended"}
 
@@ -156,13 +153,13 @@ def delete_chat_session(session_id: int, db: Session = Depends(get_db), user = D
     # Delete all messages associated with the session
     db.query(Message).filter_by(session_id=session_id).delete()
 
+    # Delete all context associated with the session
+    db.query(ContextHistory).filter_by(session_id=session_id).delete()
+
     # Delete the chat session
     db.delete(chat_session)
     db.commit()
 
-    # Optionally, clear the in-memory chat history
-    if session_id in chats:
-        del chats[session_id]
 
     return {"message": "Chat session and associated messages deleted successfully"}
 

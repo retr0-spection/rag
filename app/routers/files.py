@@ -49,7 +49,7 @@ class FileUploadRequest(BaseModel):
 
 
 @router.post('/file', response_model=FileUploadResponse)
-def upload_file(file: UploadFile = File(...), user = Depends(auth_dependency), db: Session = Depends(get_db)):
+async def upload_file(file: UploadFile = File(...), user = Depends(auth_dependency), db: Session = Depends(get_db)):
     # Create file path
     file_location = os.path.join(upload_dir, file.filename)
 
@@ -74,7 +74,7 @@ def upload_file(file: UploadFile = File(...), user = Depends(auth_dependency), d
     ingestion.get_or_create_collection('embeddings')
 
     # Add a file (test)
-    ingestion.add_file(file_location, user.id)
+    await ingestion.add_file(file_location, user.id)
 
     return db_file
 

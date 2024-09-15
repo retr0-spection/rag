@@ -1,3 +1,5 @@
+import asyncio
+from app.database import get_settings
 import pymongo
 from pymongo import MongoClient, ASCENDING
 from bson.son import SON
@@ -15,6 +17,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from fuzzywuzzy import fuzz
+from groq import AsyncGroq
 
 # Create a temporary directory
 temp_dir = tempfile.mkdtemp()
@@ -22,6 +25,8 @@ temp_dir = tempfile.mkdtemp()
 # MongoDB connection
 client = MongoClient('mongodb://localhost:27017/')
 db = client['document_db']
+GROQ_API = get_settings().GROQ_API
+
 
 class Ingestion:
     def __init__(self, collection_name="embeddings"):
@@ -32,6 +37,7 @@ class Ingestion:
         self.model = SentenceTransformer('all-mpnet-base-v2')
         self.tfidf_vectorizer = TfidfVectorizer()
         self.file_name_vectorizer = TfidfVectorizer()
+        self.llm = AsyncGroq(api_key=GROQ_API)
 
     def create_collection(self, collection_name):
         self.collection = db[collection_name]
@@ -133,7 +139,16 @@ class Ingestion:
             soup = BeautifulSoup(file, 'html.parser')
             return soup.get_text()
 
-    def add_file(self, file_path: str, user_id: str):
+    async def generate_doc_tags(self, text: str) -> List[str]:
+            prompt = f"Generate a list of 5 relevant tags for the following text. Try to use words in the text. Respond with only the tags, separated by commas:\n\n{text}"
+            response = await self.llm.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.1-8b-instant"
+            )
+            tags = response.choices[0].message.content.strip().split(',')
+            return [tag.strip() for tag in tags]
+
+    async def add_file(self, file_path: str, user_id: str):
         try:
             raw_text = self.process_document(file_path)
             cleaned_text = self.clean_text(raw_text)
@@ -141,12 +156,17 @@ class Ingestion:
 
             file_name = os.path.basename(file_path)
             ids = [f"{user_id}_{file_name}_{i}" for i in range(len(chunks))]
+
+            # Generate tags for each chunk
+            tags_list = await asyncio.gather(*[self.generate_doc_tags(chunk) for chunk in chunks])
+
             metadatas = [{
                 "user_id": user_id,
                 "source": file_path,
                 "file_name": file_name,
-                "chunk": i
-            } for i in range(len(chunks))]
+                "chunk": i,
+                "tags": tags
+            } for i, tags in enumerate(tags_list)]
 
             self.add_documents(chunks, ids, metadatas)
 
@@ -155,8 +175,11 @@ class Ingestion:
         except Exception as e:
             print(f"Error processing file {file_path} for user {user_id}: {str(e)}")
 
-    def query(self, query_text: str, user_id: str, n_results: int = 10, relevance_threshold: float = 0.5):
+    async def query(self, query_text: str, user_id: str, n_results: int = 10, relevance_threshold: float = 0.5):
         query_embedding = self.model.encode([query_text])[0].tolist()
+
+        # Generate tags for the query
+        query_tags = await self.generate_doc_tags(query_text)
 
         pipeline = [
             {
@@ -174,16 +197,31 @@ class Ingestion:
                                 '$add': ['$$value', {'$multiply': [{'$arrayElemAt': ['$$this', 0]}, {'$arrayElemAt': ['$$this', 1]}]}]
                             }
                         }
+                    },
+                    'tag_match_count': {
+                        '$size': {
+                            '$setIntersection': ['$metadata.tags', query_tags]
+                        }
+                    }
+                }
+            },
+            {
+                '$addFields': {
+                    'combined_score': {
+                        '$add': [
+                            '$similarity',
+                            {'$multiply': ['$tag_match_count', 0.1]}  # Adjust weight as needed
+                        ]
                     }
                 }
             },
             {
                 '$match': {
-                    'similarity': {'$gte': relevance_threshold}
+                    'combined_score': {'$gte': relevance_threshold}
                 }
             },
             {
-                '$sort': SON([('similarity', -1)])
+                '$sort': SON([('combined_score', -1)])
             },
             {
                 '$limit': n_results
@@ -192,13 +230,15 @@ class Ingestion:
                 '$project': {
                     'text': 1,
                     'metadata': 1,
-                    'similarity': 1
+                    'similarity': 1,
+                    'tag_match_count': 1,
+                    'combined_score': 1
                 }
             }
         ]
 
-        results = self.collection.aggregate(pipeline)
-        return list(results)
+        results = list(self.collection.aggregate(pipeline))
+        return results
 
     def query_file_names(self, query_str: str, user_id: str, threshold: float = 0.5) -> List[Dict]:
         all_docs = self.get_all_documents(user_id)
@@ -231,6 +271,61 @@ class Ingestion:
             if score > threshold
         ]
         results.sort(key=lambda x: x['score'], reverse=True)
+
+        return results
+
+    async def query_by_tags(self, query_str: str, user_id: str, threshold: float = 0.5) -> List[Dict]:
+        # Generate tags for the query
+        query_tags = await self.generate_doc_tags(query_str)
+
+        # Fetch all unique documents for the user
+        pipeline = [
+            {
+                '$match': {
+                    'metadata.user_id': user_id
+                }
+            },
+            {
+                '$group': {
+                    '_id': '$metadata.file_name',
+                    'tags': {'$addToSet': '$metadata.tags'},
+                    'source': {'$first': '$metadata.source'},
+                    'sample_text': {'$first': '$text'}
+                }
+            }
+        ]
+
+        documents = list(self.collection.aggregate(pipeline))
+
+        results = []
+        for doc in documents:
+            # Flatten the list of tag lists
+            doc_tags = [tag for tag_list in doc['tags'] for tag in tag_list]
+
+            # Calculate tag similarity
+            matching_tags = set(query_tags) & set(doc_tags)
+            tag_similarity = len(matching_tags) / max(len(query_tags), len(doc_tags))
+
+            # Calculate text similarity using TF-IDF
+            tfidf_matrix = self.tfidf_vectorizer.fit_transform([query_str, doc['sample_text']])
+            text_similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+
+            # Combine similarities (you can adjust the weights)
+            combined_score = (0.7 * tag_similarity) + (0.3 * text_similarity)
+
+            if combined_score > threshold:
+                results.append({
+                    'file_name': doc['_id'],
+                    'source': doc['source'],
+                    'matching_tags': list(matching_tags),
+                    'tag_similarity': tag_similarity,
+                    'text_similarity': text_similarity,
+                    'combined_score': combined_score,
+                    'similarity': combined_score
+                })
+
+        # Sort results by combined score
+        results.sort(key=lambda x: x['combined_score'], reverse=True)
 
         return results
 

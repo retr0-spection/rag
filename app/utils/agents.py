@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import List, Optional, Dict
 from app.utils.auth import auth_dependency
-from app.database import get_db
+from app.database import get_db, get_settings
 from app.models.models import Agent, Session as ChatSession, Message
 from app.ingestion.utils import Ingestion
 from langchain.memory import ConversationBufferMemory
@@ -27,10 +27,11 @@ from langchain_core.messages import AIMessage
 from langchain.schema import HumanMessage
 
 
-GROQ_API = "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"
+GROQ_API = get_settings().GROQ_API
 
 FILE_MATCH_THRESHOLD = 0.6
 RELEVANCE_THRESHOLD = 0.15
+TAG_MATCH_THRESHOLD = 0.8
 
 class Agent(abc.ABC):
     @abc.abstractmethod
@@ -58,7 +59,7 @@ class ContextAgent(Agent):
         query = task['message']
         user_id = task['user_id']
         if needs_context(query):
-            return fetch_customer_context(query, user_id)
+            return await fetch_customer_context(query, user_id)
         return ""
 
 class LLMAgent(Agent):
@@ -158,7 +159,7 @@ class MultiAgentSystem:
         self.llm_agent = llm_agent
 
     async def process_message(self, params: Dict) -> str:
-        try:
+        # try:
             # Get context if needed
             context = await self.context_agent.process_task(params)
             params['context'] = context
@@ -167,29 +168,76 @@ class MultiAgentSystem:
             response = await self.llm_agent.process_task(params)
 
             return response
-        except Exception as e:
-            print(f"Error in MultiAgentSystem: {str(e)}")
-            return "I apologize, but I encountered an error while processing your request."
+        # except Exception as e:
+        #     print(f"Error in MultiAgentSystem: {str(e)}")
+        #     return "I apologize, but I encountered an error while processing your request."
 
 
-def fetch_customer_context(query_str: str, user_id: str):
+async def fetch_customer_context(query_str: str, user_id: str):
     ingestion = Ingestion()
     ingestion.get_or_create_collection('embeddings')
 
     # First, try to find file matches
     file_matches = ingestion.query_file_names(query_str, user_id)
 
-    # If we have strong file matches, return those
+    # Then, try to find tag matches
+    tag_matches = await ingestion.query_by_tags(query_str, user_id)
+
+    # If we have strong file matches, prioritize those
     if len(file_matches) and file_matches[0]['similarity'] > FILE_MATCH_THRESHOLD:
         return "\n".join([match['text'] for match in file_matches])
 
-    # Otherwise, perform semantic search
-    semantic_results = ingestion.query(query_str, user_id)
+    # If we have strong tag matches, include those
+    tag_matched_files = [match for match in tag_matches if match['combined_score'] > TAG_MATCH_THRESHOLD]
+
+    # Perform semantic search
+    semantic_results = await ingestion.query(query_str, user_id, relevance_threshold=RELEVANCE_THRESHOLD)
 
     # Combine and rank results
-    combined_results = rank_and_combine_results(file_matches, semantic_results)
+    combined_results = rank_and_combine_results(file_matches, tag_matched_files, semantic_results)
 
-    return "\n".join([result['text'] for result in combined_results])
+    # Extract and combine relevant text
+    context_text = []
+    for result in combined_results:
+        if 'text' in result:
+            context_text.append(result['text'])
+        elif 'sample_text' in result:
+            context_text.append(result['sample_text'])
+
+    return "\n".join(context_text)
+
+def rank_and_combine_results(file_matches: List[Dict], tag_matches: List[Dict], semantic_results: List[Dict]) -> List[Dict]:
+    combined_results = []
+
+    # Process file matches
+    for match in file_matches:
+        combined_results.append({
+            'text': match['text'],
+            'score': match['similarity'],
+            'type': 'file_match'
+        })
+
+    # Process tag matches
+    for match in tag_matches:
+        combined_results.append({
+            'sample_text': match.get('sample_text', ''),
+            'score': match['combined_score'],
+            'type': 'tag_match',
+            'matching_tags': match['matching_tags']
+        })
+
+    # Process semantic results
+    for result in semantic_results:
+        combined_results.append({
+            'text': result['text'],
+            'score': result['similarity'],
+            'type': 'semantic_match'
+        })
+
+    # Sort combined results by score in descending order
+    combined_results.sort(key=lambda x: x['score'], reverse=True)
+
+    return combined_results
 
 def needs_context(query: str) -> bool:
     # Convert query to lowercase
@@ -243,11 +291,7 @@ def needs_context(query: str) -> bool:
     # If none of the above conditions are met, context might not be needed
     return False
 
-def rank_and_combine_results(file_matches: List[Dict], semantic_results: List[Dict]) -> List[Dict]:
-    combined_results = file_matches + semantic_results
-    print(combined_results)
-    combined_results.sort(key=lambda x: x['similarity'], reverse=True)
-    return combined_results
+
 
 async def setup_multi_agent_system(db, user, agent_config, session_id):
     ingestion = Ingestion()
@@ -266,12 +310,11 @@ async def setup_multi_agent_system(db, user, agent_config, session_id):
 
     prompt_template = PromptTemplate(
         template="""
-
-        System: {system}.
+        System: {system}. If you're giving context, always try to see if it is relevant to answering the question otherwise ignore it. Consult the resource given below when appropriate.
         Resource: {context}
         Chat History: {chat_history}
         User Message: {message}
-        Assistant: Output is used in ReactMarkdown component. Format your responses nicely. Don't be afraid to use newlines and space.
+        Assistant: Output in ReactMarkdown. Format your responses nicely. Don't be afraid to use newlines and space.Make use of headings and bold fonts where applicable.
         AI Response:""",
         input_variables=["system", "context", "chat_history", "message"]
     )
