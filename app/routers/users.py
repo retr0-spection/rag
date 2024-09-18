@@ -19,7 +19,7 @@ class LoginBase(BaseModel):
     access_token: str
 
 
-@router.post('/signup')
+@router.post('/signup',  response_model=LoginBase)
 def create_user(user: UserInputBase, db: db_dependency):
     email = user.email
     hashed_password = hash_password(user.password)
@@ -29,6 +29,8 @@ def create_user(user: UserInputBase, db: db_dependency):
     print(db)
     db.add(user)
     db.commit()
+    token = jwt_manager.issue_token(user_id=user.id)
+    return {'message':'Account Created', 'access_token':token}
 
 @router.post('/login', responses={200:{'description':'Authenticated'}, 403:{'description': 'Incorrect user/password'}}, response_model=LoginBase)
 def authenticate_user(user: UserInputBase, db: db_dependency):

@@ -25,6 +25,7 @@ import json
 import asyncio
 from langchain_core.messages import AIMessage
 from langchain.schema import HumanMessage
+from .config import mermaid_config
 
 
 GROQ_API = get_settings().GROQ_API
@@ -92,6 +93,8 @@ class LLMAgent(Agent):
 
         # Combine context history
         context = "\n".join(context_history)
+        if len(context) == 0:
+            context = "None"
 
         prompt = self.prompt_template.format(
             system=task['system'],
@@ -255,7 +258,7 @@ def needs_context(query: str) -> bool:
         'background', 'history', 'details', 'information', 'context',
         'explain', 'elaborate', 'clarify', 'describe', 'summarize',
         'overview', 'introduction', 'summary', 'breakdown', 'analysis',
-        'file', 'document'  # Add keywords related to file requests
+        'file', 'document','data'  # Add keywords related to file requests
     ]
 
     # Check for presence of context-indicating keywords
@@ -299,7 +302,7 @@ async def setup_multi_agent_system(db, user, agent_config, session_id):
 
     callback_handler = AsyncIteratorCallbackHandler()
     llm = ChatGroq(
-        temperature=0,
+        temperature=0.1,
         groq_api_key=GROQ_API,
         model_name=agent_config['llm'],
         streaming=True,
@@ -314,7 +317,17 @@ async def setup_multi_agent_system(db, user, agent_config, session_id):
         Resource: {context}
         Chat History: {chat_history}
         User Message: {message}
-        Assistant: Output in ReactMarkdown. Format your responses nicely. Don't be afraid to use newlines and space.Make use of headings and bold fonts where applicable.
+        Assistant: Output in Markdown ex.
+        Table in Markdown
+        | Syntax      | Description | Test Text     |
+        | :---        |    :----:   |          ---: |
+        | Header      | Title       | Here's this   |
+        | Paragraph   | Text        | And more      |, and Mermaid diagrams should strictly follow this format
+        ex.
+        _________________________
+        """ +  f"{mermaid_config}" + """
+        _________________________
+        Format your responses nicely. Make use of headings, subheadings and bold fonts, tables where appropriate. Make sure tables are well formatted and have clear borders. When using mermaid don't disclose that you're using mermaid
         AI Response:""",
         input_variables=["system", "context", "chat_history", "message"]
     )

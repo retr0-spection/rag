@@ -172,7 +172,7 @@ def rank_and_combine_results(file_matches: List[Dict], semantic_results: List[Di
 async def generate_ai_title(messages, llm):
     prompt = PromptTemplate(
         input_variables=["chat_history"],
-        template="Summarize the following conversation in a short, concise title of 5-7 words:\n\n{chat_history}"
+        template="Summarize the following conversation in a short, concise title of 5-7 words(only provide the concise summary, nothing else):\n\n{chat_history}"
     )
     chat_history = "\n".join([f"{msg.sender}: {msg.content}" for msg in messages])
     response = await llm.apredict(prompt.format(chat_history=chat_history))
