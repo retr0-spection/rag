@@ -1,180 +1,87 @@
 import abc
-from app.models.contexthistory import ContextHistory
-from fastapi import HTTPException
+from typing import Dict, List, Tuple, Annotated, TypedDict
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_groq import ChatGroq
 from langchain.memory import ConversationBufferMemory
-from langchain_core.prompts import PromptTemplate
-from app.ingestion.utils import Ingestion
-from fastapi import APIRouter, Depends, HTTPException, Body
-from fastapi.responses import StreamingResponse
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolInvocation, ToolExecutor
+
+from pydantic import BaseModel, Field
+
+from fastapi import HTTPException, Depends
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
 from datetime import datetime
-from typing import List, Optional, Dict
-from app.utils.auth import auth_dependency
-from app.database import get_db, get_settings
-from app.models.models import Agent, Session as ChatSession, Message
 from app.ingestion.utils import Ingestion
-from langchain.memory import ConversationBufferMemory
-from langchain.callbacks import AsyncIteratorCallbackHandler
+from app.database import get_db, get_settings
+from app.models.contexthistory import ContextHistory
+from app.models.models import Agent, Session as ChatSession, Message
 import re
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 import nltk
 import json
 import asyncio
-from langchain_core.messages import AIMessage
-from langchain.schema import HumanMessage
-from .config import mermaid_config
 
-
+# Constants
 GROQ_API = get_settings().GROQ_API
-
 FILE_MATCH_THRESHOLD = 0.6
 RELEVANCE_THRESHOLD = 0.15
 TAG_MATCH_THRESHOLD = 0.8
 
-class Agent(abc.ABC):
-    @abc.abstractmethod
-    async def process_task(self, task: Dict) -> str:
-        pass
+# Existing utility functions
+def needs_context(query: str) -> bool:
+    # Convert query to lowercase
+    query = query.lower()
 
-class RouterAgent(Agent):
-    def __init__(self, specialized_agents: List[Agent]):
-        self.specialized_agents = specialized_agents
+    # Tokenize the query
+    tokens = word_tokenize(query)
 
-    async def process_task(self, task: Dict) -> str:
-        appropriate_agent = self.select_agent(task)
-        return await appropriate_agent.process_task(task)
+    # Remove stopwords
+    stop_words = set(stopwords.words('english'))
+    tokens = [token for token in tokens if token not in stop_words]
 
-    def select_agent(self, task: Dict) -> Agent:
-        # Implement logic to select the appropriate agent based on the task
-        # For simplicity, we'll just return the first agent here
-        return self.specialized_agents[0]
+    # Define context-indicating keywords
+    context_keywords = [
+        'background', 'history', 'details', 'information', 'context',
+        'explain', 'elaborate', 'clarify', 'describe', 'summarize',
+        'overview', 'introduction', 'summary', 'breakdown', 'analysis',
+        'file', 'document', 'data'
+    ]
 
-class ContextAgent(Agent):
-    def __init__(self, ingestion: Ingestion):
-        self.ingestion = ingestion
+    # Check for presence of context-indicating keywords
+    if any(keyword in tokens for keyword in context_keywords):
+        return True
 
-    async def process_task(self, task: Dict) -> str:
-        query = task['message']
-        user_id = task['user_id']
-        if needs_context(query):
-            return await fetch_customer_context(query, user_id)
-        return ""
+    # Check for question words that often require context
+    question_words = ['who', 'what', 'where', 'when', 'why', 'how']
+    if any(word in tokens for word in question_words):
+        return True
 
-class LLMAgent(Agent):
-    def __init__(self, llm: ChatGroq, prompt_template: PromptTemplate, memory: ConversationBufferMemory,session_id, db: Session):
-        self.llm = llm
-        self.prompt_template = prompt_template
-        self.memory = memory
-        self.db = db
-        self.session_id = session_id
+    # Check for comparative or superlative adjectives
+    if any(token.endswith(('er', 'est')) for token in tokens):
+        return True
 
-    async def process_task(self, task: Dict) -> str:
-        new_context = task.get('context', '')
-        message = task['message']
-        # Get updated chat history
+    # Check for phrases indicating a need for context or file request
+    context_phrases = [
+        'tell me about', 'give me information on', 'what do you know about',
+        'can you explain', 'i need to understand', 'provide details on',
+        'show me the file', 'find the document', 'search for the file'
+    ]
+    if any(phrase in query for phrase in context_phrases):
+        return True
 
-        # Load previous messages into memory
-        self.load_previous_messages(self.session_id)
+    # Check query length - longer queries might need context
+    if len(tokens) > 10:
+        return True
 
-        chat_history = self.memory.load_memory_variables({}).get("chat_history", "")
+    # Check for presence of proper nouns (potential named entities)
+    if any(token.istitle() for token in tokens):
+        return True
 
-
-
-        # Store new context if provided
-        if new_context:
-            self.store_context(self.session_id, new_context)
-
-        # Retrieve context history
-        context_history = self.get_context_history(self.session_id)
-
-
-        # Combine context history
-        context = "\n".join(context_history)
-        if len(context) == 0:
-            context = "None"
-
-        prompt = self.prompt_template.format(
-            system=task['system'],
-            context=context,
-            chat_history=chat_history,
-            message=message
-        )
-
-        print(prompt)
-
-        try:
-            response = await self.llm.ainvoke(prompt)
-
-            if isinstance(response, AIMessage):
-                response_content = response.content
-            elif isinstance(response, str):
-                response_content = response
-            else:
-                raise ValueError(f"Unexpected response type: {type(response)}")
-
-            self.memory.save_context({"input": message}, {"output": response_content})
-            self.store_message(self.session_id, message, sender="user")
-            self.store_message(self.session_id, response_content, sender="AI")
-            return response_content
-
-        except Exception as e:
-            print(f"Error in LLMAgent: {str(e)}")
-            return "I apologize, but I encountered an error while processing your request."
-
-    def store_context(self, session_id: int, context: str):
-        new_context = ContextHistory(session_id=session_id, context=context)
-        self.db.add(new_context)
-        self.db.commit()
-
-    def get_context_history(self, session_id: int, limit: int = 3) -> List[str]:
-        context_history = self.db.query(ContextHistory) \
-            .filter(ContextHistory.session_id == session_id) \
-            .order_by(ContextHistory.created_at.desc()) \
-            .limit(limit) \
-            .all()
-        return [ch.context for ch in reversed(context_history)]
-
-    def load_previous_messages(self, session_id: int):
-        messages = self.db.query(Message) \
-            .filter(Message.session_id == session_id) \
-            .order_by(Message.timestamp.asc()) \
-            .all()
-
-        for msg in messages:
-            if msg.sender == "user":
-                self.memory.chat_memory.add_user_message(msg.content)
-            else:
-                self.memory.chat_memory.add_ai_message(msg.content)
-
-    def store_message(self, session_id: int, content: str, sender: str):
-        new_message = Message(session_id=session_id, content=content, sender=sender)
-        self.db.add(new_message)
-        self.db.commit()
-
-
-class MultiAgentSystem:
-    def __init__(self, router: RouterAgent, context_agent: ContextAgent, llm_agent: LLMAgent):
-        self.router = router
-        self.context_agent = context_agent
-        self.llm_agent = llm_agent
-
-    async def process_message(self, params: Dict) -> str:
-        # try:
-            # Get context if needed
-            context = await self.context_agent.process_task(params)
-            params['context'] = context
-
-            # Process the message with the LLM agent
-            response = await self.llm_agent.process_task(params)
-
-            return response
-        # except Exception as e:
-        #     print(f"Error in MultiAgentSystem: {str(e)}")
-        #     return "I apologize, but I encountered an error while processing your request."
-
+    # If none of the above conditions are met, context might not be needed
+    return False
 
 async def fetch_customer_context(query_str: str, user_id: str):
     ingestion = Ingestion()
@@ -242,98 +149,149 @@ def rank_and_combine_results(file_matches: List[Dict], tag_matches: List[Dict], 
 
     return combined_results
 
-def needs_context(query: str) -> bool:
-    # Convert query to lowercase
-    query = query.lower()
+# New LangGraph implementation
 
-    # Tokenize the query
-    tokens = word_tokenize(query)
+class AgentState(TypedDict):
+    messages: List[BaseMessage]
+    context: str
+    user_id: str
+    session_id: int
 
-    # Remove stopwords
-    stop_words = set(stopwords.words('english'))
-    tokens = [token for token in tokens if token not in stop_words]
+class ContextTool(BaseModel):
+    name: str = "fetch_context"
+    description: str = "Fetch context for a given query and user ID"
+    query: str = Field(description="The query to fetch context for")
+    user_id: str = Field(description="The user ID to fetch context for")
 
-    # Define context-indicating keywords
-    context_keywords = [
-        'background', 'history', 'details', 'information', 'context',
-        'explain', 'elaborate', 'clarify', 'describe', 'summarize',
-        'overview', 'introduction', 'summary', 'breakdown', 'analysis',
-        'file', 'document','data'  # Add keywords related to file requests
-    ]
+    async def __call__(self, query: str, user_id: str) -> str:
+        return await fetch_customer_context(query, user_id)
 
-    # Check for presence of context-indicating keywords
-    if any(keyword in tokens for keyword in context_keywords):
-        return True
+class LLMNode:
+    def __init__(self, llm: ChatGroq, prompt: ChatPromptTemplate, memory: ConversationBufferMemory, db):
+        self.llm = llm
+        self.prompt = prompt
+        self.memory = memory
+        self.db = db
 
-    # Check for question words that often require context
-    question_words = ['who', 'what', 'where', 'when', 'why', 'how']
-    if any(word in tokens for word in question_words):
-        return True
+    def __call__(self, state: AgentState) -> Dict:
+        messages = state['messages']
+        context = state['context']
+        user_message = messages[-1].content if messages else ""
 
-    # Check for comparative or superlative adjectives
-    if any(token.endswith(('er', 'est')) for token in tokens):
-        return True
+        chat_history = self.memory.load_memory_variables({}).get("chat_history", "")
 
-    # Check for phrases indicating a need for context or file request
-    context_phrases = [
-        'tell me about', 'give me information on', 'what do you know about',
-        'can you explain', 'i need to understand', 'provide details on',
-        'show me the file', 'find the document', 'search for the file'  # Add phrases related to file requests
-    ]
-    if any(phrase in query for phrase in context_phrases):
-        return True
+        full_prompt = self.prompt.format(
+            system="You are a helpful assistant.",
+            context=context,
+            chat_history=chat_history,
+            message=user_message
+        )
 
-    # Check query length - longer queries might need context
-    if len(tokens) > 10:
-        return True
+        ai_message = self.llm.invoke(full_prompt)
 
-    # Check for presence of proper nouns (potential named entities)
-    if any(token.istitle() for token in tokens):
-        return True
+        # Store the message
+        self.store_message(state['session_id'], user_message, "user")
+        self.store_message(state['session_id'], ai_message.content, "AI")
 
-    # If none of the above conditions are met, context might not be needed
-    return False
+        # Update memory
+        self.memory.save_context({"input": user_message}, {"output": ai_message.content})
 
+        return {
+            "messages": messages + [AIMessage(content=ai_message.content)],
+            "context": context,
+            "user_id": state['user_id'],
+            "session_id": state['session_id']
+        }
 
 
-async def setup_multi_agent_system(db, user, agent_config, session_id):
-    ingestion = Ingestion()
-    context_agent = ContextAgent(ingestion)
 
-    callback_handler = AsyncIteratorCallbackHandler()
+
+    def store_message(self, session_id: int, content: str, sender: str):
+        new_message = Message(session_id=session_id, content=content, sender=sender)
+        self.db.add(new_message)
+        self.db.commit()
+
+def context_agent(state: AgentState) -> Tuple[AgentState, str]:
+    user_message = state['messages'][-1].content
+    # if needs_context(user_message):
+    #     return state, "fetch_context"
+    return state, "llm"
+
+def router(state: AgentState) -> Dict:
+    _dict = {
+        "messages":state['messages'],
+        "context":state["context"],
+        "user_id":state['user_id'],
+        "session_id":state['session_id'],
+        "end":True
+    }
+    return _dict
+
+async def setup_langgraph_system(user, agent_config, session_id, db):
     llm = ChatGroq(
         temperature=0.1,
         groq_api_key=GROQ_API,
         model_name=agent_config['llm'],
-        streaming=True,
-        callbacks=[callback_handler]
+        streaming=True
     )
 
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    restore_memory_state(memory, session_id, db)
 
-    prompt_template = PromptTemplate(
-        template="""
-        System: {system}. If you're giving context, always try to see if it is relevant to answering the question otherwise ignore it. Consult the resource given below when appropriate.
-        Resource: {context}
-        Chat History: {chat_history}
-        User Message: {message}
-        Assistant: Output in Markdown ex.
-        Table in Markdown
-        | Syntax      | Description | Test Text     |
-        | :---        |    :----:   |          ---: |
-        | Header      | Title       | Here's this   |
-        | Paragraph   | Text        | And more      |, and Mermaid diagrams should strictly follow this format
-        ex.
-        _________________________
-        """ +  f"{mermaid_config}" + """
-        _________________________
-        Format your responses nicely. Make use of headings, subheadings and bold fonts, tables where appropriate. Make sure tables are well formatted and have clear borders. When using mermaid don't disclose that you're using mermaid
-        AI Response:""",
-        input_variables=["system", "context", "chat_history", "message"]
+    print(agent_config)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", f"System: {agent_config['prompt']}. If you're given context, always try to see if it is relevant to answering the question otherwise ignore it. Consult the resource given below when appropriate."),
+        ("system", "Resource: {context}"),
+        ("system", "Chat History: {chat_history}"),
+        ("human", "{message}"),
+    ])
+
+    llm_node = LLMNode(llm, prompt, memory, db)
+
+    # tools = [ContextTool]
+    # tool_executor = ToolExecutor(tools)
+
+    workflow = StateGraph(AgentState)
+
+    # workflow.add_node("context_agent", context_agent)
+    # workflow.add_node("fetch_context", tool_executor)
+    workflow.add_node("llm", llm_node)
+    workflow.add_node("router", router)
+
+    workflow.set_entry_point("llm")
+
+    # workflow.add_edge("context_agent", "fetch_context")
+    # workflow.add_edge("context_agent", "llm")
+    # workflow.add_edge("fetch_context", "llm")
+    workflow.add_edge("llm", "router")
+    workflow.add_edge("router", END)
+
+    app = workflow.compile()
+
+    return app
+
+# Usage function
+async def process_message(sys, message: str, user_id: str, session_id: int):
+    initial_state = AgentState(
+        messages=[HumanMessage(content=message)],
+        context="",
+        user_id=user_id,
+        session_id=session_id
     )
 
-    llm_agent = LLMAgent(llm, prompt_template, memory, session_id, db)
+    async for chunk in sys.astream(initial_state):
+        print(chunk)
+        try:
+            yield "__token__:" + chunk['router']['messages'][-1].content
+        except Exception:
+            pass
 
-    router = RouterAgent([context_agent, llm_agent])
+def restore_memory_state(memory, session_id, db):
+    messages = db.query(Message).filter_by(session_id=session_id).order_by(Message.timestamp)
 
-    return MultiAgentSystem(router, context_agent, llm_agent), callback_handler
+    for message in messages:
+        if message.sender == "user":
+            memory.save_context({"input": message.content},{"output": ""})
+        else:
+            memory.save_context({"input": ""},{"output": message.content})

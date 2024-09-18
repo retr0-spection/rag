@@ -1,5 +1,5 @@
 from app.models.contexthistory import ContextHistory
-from app.utils.agents import setup_multi_agent_system
+from app.utils.agents import process_message, setup_langgraph_system
 from fastapi import APIRouter, Depends, HTTPException, Body
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -20,7 +20,6 @@ from nltk.corpus import stopwords
 import nltk
 import json
 import asyncio
-from app.utils.agents import setup_multi_agent_system
 
 router = APIRouter(tags=["chat"])
 
@@ -40,7 +39,6 @@ def get_chat_sessions(db: Session = Depends(get_db), user = Depends(auth_depende
     chat_sessions = db.query(ChatSession).filter_by(user_id=user.id).all()
     return {"chat_sessions": chat_sessions}
 
-# Route to send a message (and start a new session if needed) with streaming response
 @router.post('/chat')
 async def send_message(params: SendMessageParams, db: Session = Depends(get_db), user = Depends(auth_dependency)):
     # If no session_id is provided, create a new chat session
@@ -49,7 +47,6 @@ async def send_message(params: SendMessageParams, db: Session = Depends(get_db),
         agent = db.query(Agent).filter_by(id=params.agent_id).first()
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
-
         # Create a new chat session
         initial_title = " ".join(params.message.split()[:5]) + "..."
         chat_session = ChatSession(agent_id=params.agent_id, user_id=user.id, start_time=datetime.utcnow(), title=initial_title)
@@ -67,10 +64,12 @@ async def send_message(params: SendMessageParams, db: Session = Depends(get_db),
     agent = db.query(Agent).filter_by(id=chat_session.agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-
     agent_config = json.loads(agent.configuration)
 
-    multi_agent_system, callback_handler = await setup_multi_agent_system(db, user, agent_config, params.session_id)
+
+
+    # Setup the LangGraph system
+    system = await setup_langgraph_system(user.id, agent_config, params.session_id, db)
 
     message_count = db.query(Message).filter_by(session_id=chat_session.id).count()
     # Update title every 5 messages
@@ -80,35 +79,26 @@ async def send_message(params: SendMessageParams, db: Session = Depends(get_db),
         new_title = await generate_ai_title(messages, llm)
         chat_session.title = new_title
         db.commit()
+
     async def generate_response():
         # Reattach the chat_session to the current database session
         db.add(chat_session)
         db.refresh(chat_session)
-        full_response = ""
+        db.add(user)
+        db.refresh(user)
 
-        async for token in callback_handler.aiter():
-            full_response += token
-            yield f"data: {json.dumps({'token': token})}\n\n"
+        # Process the message with the LangGraph system
+        async for chunk in process_message(system, params.message, user.id, params.session_id):
+            if "__token__:" in chunk:
+                yield f"data: {json.dumps({'token': chunk})}\n\n"
+            elif "__error__:" in chunk:
+                yield f"data: {json.dumps({'error': "I apologise, but I couldn't process your request."})}\n\n"
 
-        # # Save messages to database
-        # user_message = Message(session_id=chat_session.id, sender='user', content=params.message, timestamp=datetime.utcnow())
-        # ai_message = Message(session_id=chat_session.id, sender='AI', content=full_response, timestamp=datetime.utcnow())
-        # db.add(user_message)
-        # db.add(ai_message)
-        # db.commit()
 
 
 
         yield f"data: {json.dumps({'session_id': chat_session.id, 'title': chat_session.title})}\n\n"
         yield "data: [DONE]\n\n"
-
-    # Process the message with the multi-agent system
-    asyncio.create_task(multi_agent_system.process_message({
-        'message': params.message,
-        'user_id': user.id,
-        'system': agent_config['prompt'],
-        'session_id': params.session_id
-    }))
 
     return StreamingResponse(generate_response(), media_type="text/event-stream")
 
