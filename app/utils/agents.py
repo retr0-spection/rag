@@ -1,15 +1,15 @@
 import abc
-from typing import Dict, List, Tuple, Annotated, TypedDict
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from typing import Dict, List, Tuple, Annotated, TypedDict, Literal
+from app.models.file import File
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_groq import ChatGroq
 from langchain.memory import ConversationBufferMemory
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import JsonOutputParser
-from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolInvocation, ToolExecutor
-
+from langgraph.graph import StateGraph, END, START
+from langgraph.prebuilt import ToolInvocation, ToolExecutor, ToolNode
 from pydantic import BaseModel, Field
-
+from langchain_core.tools import tool
 from fastapi import HTTPException, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -23,6 +23,7 @@ from nltk.corpus import stopwords
 import nltk
 import json
 import asyncio
+import functools
 
 # Constants
 GROQ_API = get_settings().GROQ_API
@@ -83,10 +84,29 @@ def needs_context(query: str) -> bool:
     # If none of the above conditions are met, context might not be needed
     return False
 
-async def fetch_customer_context(query_str: str, user_id: str):
+
+@tool
+def get_document_contents(document_name:str, user_id:str):
+    """
+    Retrieve all chunks for a specific document name and user ID.
+
+    Args:
+        document_name (str): The name of the document to retrieve chunks for.
+        user_id (str): The ID of the user who owns the document.
+
+    Returns:
+        List[Dict]: A list of dictionaries, each containing a chunk's content and metadata.
+    """
+    return Ingestion().get_document_chunks(document_name, user_id)
+
+@tool
+async def fetch_customer_context(query_str: Annotated[str, "User prompt"], user_id: Annotated[str, "user id"]) -> str:
+    '''Fetch internal resources and user documents that might be relevant to the query.'''
     ingestion = Ingestion()
     ingestion.get_or_create_collection('embeddings')
 
+
+    print("fetching file")
     # First, try to find file matches
     file_matches = ingestion.query_file_names(query_str, user_id)
 
@@ -116,6 +136,9 @@ async def fetch_customer_context(query_str: str, user_id: str):
 
     return "\n".join(context_text)
 
+
+tools = [fetch_customer_context, get_document_contents]
+tool_node = ToolNode(tools)
 def rank_and_combine_results(file_matches: List[Dict], tag_matches: List[Dict], semantic_results: List[Dict]) -> List[Dict]:
     combined_results = []
 
@@ -153,21 +176,13 @@ def rank_and_combine_results(file_matches: List[Dict], tag_matches: List[Dict], 
 
 class AgentState(TypedDict):
     messages: List[BaseMessage]
-    context: str
     user_id: str
     session_id: int
-
-class ContextTool(BaseModel):
-    name: str = "fetch_context"
-    description: str = "Fetch context for a given query and user ID"
-    query: str = Field(description="The query to fetch context for")
-    user_id: str = Field(description="The user ID to fetch context for")
-
-    async def __call__(self, query: str, user_id: str) -> str:
-        return await fetch_customer_context(query, user_id)
+    sender: str
+    current_agent: str  # New field to track the current agent
 
 class LLMNode:
-    def __init__(self, llm: ChatGroq, prompt: ChatPromptTemplate, memory: ConversationBufferMemory, db):
+    def __init__(self, llm: ChatGroq, prompt: ChatPromptTemplate, memory: ConversationBufferMemory, tools, db):
         self.llm = llm
         self.prompt = prompt
         self.memory = memory
@@ -175,22 +190,36 @@ class LLMNode:
 
     def __call__(self, state: AgentState) -> Dict:
         messages = state['messages']
-        context = state['context']
-        user_message = messages[-1].content if messages else ""
+        last_message = messages[-1]
+
+        # Check if the last message is from Aurora (self-communication)
+        if last_message.content.startswith("__Aurora__:"):
+            # Remove the prefix and add a system message to indicate self-communication
+            cleaned_content = last_message.content.replace("__Aurora__:", "").strip()
+            user_message = messages[:-1] + [
+                SystemMessage(content="You are now in a self-reflection mode. The following message is from yourself:"),
+                AIMessage(content=cleaned_content)
+            ]
+        else:
+            user_message = messages[-1].content if messages else ""
+
+
 
         chat_history = self.memory.load_memory_variables({}).get("chat_history", "")
 
+        files = self.db.query(File).filter(File.owner_id == state['user_id']).all()
+        file_names = [file.filename for file in files]
+
         full_prompt = self.prompt.format(
-            system="You are a helpful assistant.",
-            context=context,
-            chat_history=chat_history,
-            message=user_message
+            query=user_message,
+            file_names=file_names,
         )
 
         ai_message = self.llm.invoke(full_prompt)
 
         # Store the message
-        self.store_message(state['session_id'], user_message, "user")
+        if state['sender'] == 'user':
+            self.store_message(state['session_id'], user_message, "user")
         self.store_message(state['session_id'], ai_message.content, "AI")
 
         # Update memory
@@ -198,13 +227,11 @@ class LLMNode:
 
         return {
             "messages": messages + [AIMessage(content=ai_message.content)],
-            "context": context,
             "user_id": state['user_id'],
-            "session_id": state['session_id']
+            "session_id": state['session_id'],
+            "sender": "Aurora",
+            "current_agent": "Aurora"
         }
-
-
-
 
     def store_message(self, session_id: int, content: str, sender: str):
         new_message = Message(session_id=session_id, content=content, sender=sender)
@@ -217,15 +244,16 @@ def context_agent(state: AgentState) -> Tuple[AgentState, str]:
     #     return state, "fetch_context"
     return state, "llm"
 
-def router(state: AgentState) -> Dict:
-    _dict = {
-        "messages":state['messages'],
-        "context":state["context"],
-        "user_id":state['user_id'],
-        "session_id":state['session_id'],
-        "end":True
-    }
-    return _dict
+def router(state: AgentState) -> Literal["Aurora", "call_tool", "__end__"]:
+    messages = state["messages"]
+    last_message = messages[-1]
+    if last_message.tool_calls:
+        return "call_tool"
+    if "FINAL ANSWER" in last_message.content:
+        return END
+    if "__Aurora__" in last_message.content:
+        return "Aurora"
+    return END
 
 async def setup_langgraph_system(user, agent_config, session_id, db):
     llm = ChatGroq(
@@ -238,34 +266,23 @@ async def setup_langgraph_system(user, agent_config, session_id, db):
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     restore_memory_state(memory, session_id, db)
 
-    print(agent_config)
+    llm_agent = create_agent(llm, agent_config['prompt'], memory, [fetch_customer_context, get_document_contents], db)
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", f"System: {agent_config['prompt']}. If you're given context, always try to see if it is relevant to answering the question otherwise ignore it. Consult the resource given below when appropriate."),
-        ("system", "Resource: {context}"),
-        ("system", "Chat History: {chat_history}"),
-        ("human", "{message}"),
-    ])
-
-    llm_node = LLMNode(llm, prompt, memory, db)
-
-    # tools = [ContextTool]
-    # tool_executor = ToolExecutor(tools)
+    llm_node = functools.partial(agent_node, agent=llm_agent, name="Aurora")
 
     workflow = StateGraph(AgentState)
 
-    # workflow.add_node("context_agent", context_agent)
-    # workflow.add_node("fetch_context", tool_executor)
-    workflow.add_node("llm", llm_node)
-    workflow.add_node("router", router)
+    workflow.add_node("Aurora", llm_node)
+    workflow.add_node("call_tool", tool_node)
 
-    workflow.set_entry_point("llm")
+    workflow.add_conditional_edges(
+        "Aurora",
+        router,
+        {"call_tool": "call_tool", "__end__": END, "Aurora": "Aurora"},
+    )
 
-    # workflow.add_edge("context_agent", "fetch_context")
-    # workflow.add_edge("context_agent", "llm")
-    # workflow.add_edge("fetch_context", "llm")
-    workflow.add_edge("llm", "router")
-    workflow.add_edge("router", END)
+    workflow.add_edge(START, "Aurora")
+    workflow.add_edge("call_tool", "Aurora")  # Tools always return to Aurora
 
     app = workflow.compile()
 
@@ -275,15 +292,16 @@ async def setup_langgraph_system(user, agent_config, session_id, db):
 async def process_message(sys, message: str, user_id: str, session_id: int):
     initial_state = AgentState(
         messages=[HumanMessage(content=message)],
-        context="",
         user_id=user_id,
-        session_id=session_id
+        session_id=session_id,
+        sender="user",
+        current_agent="Aurora"  # Start with Aurora as the default agent
     )
 
     async for chunk in sys.astream(initial_state):
         print(chunk)
         try:
-            yield "__token__:" + chunk['router']['messages'][-1].content
+            yield "__token__:" + chunk['Aurora']['messages'][-1].content
         except Exception:
             pass
 
@@ -292,6 +310,53 @@ def restore_memory_state(memory, session_id, db):
 
     for message in messages:
         if message.sender == "user":
-            memory.save_context({"input": message.content},{"output": ""})
+            memory.save_context({"input": message.content}, {"output": ""})
         else:
-            memory.save_context({"input": ""},{"output": message.content})
+            memory.save_context({"input": ""}, {"output": message.content})
+
+def create_agent(model, system_message:str, memory, tools, db):
+    '''Creates an agent'''
+    functions = [t for t in tools]
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "\
+            You are an AI assistant named Aurora. \
+            Use the provided tools to progress towards answering the question. \
+            If you are unable to answer, that's OK, prefix your answer with FINAL ANSWER to respond\
+            to the user\
+            For example: FINAL ANSWER: The answer to the meaning of life is 42 \n or \n \
+            FINAL ANSWER: I don't know the answer to that \n\
+            If you don't prefix your response you'll automatically reply to the user.\
+            To consult with yourself, prefix your answer with __Aurora__, for example __Aurora__: This looks good enough\n\
+            When you see a message starting with 'You are now in a self-reflection mode', it means you're \
+            communicating with yourself. Treat this as an internal monologue or thought process.\n\
+            You have access to the following tools:{tool_names}. You can fetch a document's contents using the tool \n \
+            Don't mention the use of tool use to the user for security reasons, fetch context whenever\
+            you feel that a user is referring to a file in the knowledge base\n\
+            Here's the data available in the user's knowledge base: {file_names}\n\
+            {system_message}."),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{query}")
+    ])
+    prompt = prompt.partial(system_message=system_message)
+    prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
+    prompt = prompt.partial(chat_history=memory.load_memory_variables({}).get("chat_history", ""))
+
+    model.bind_tools(tools)
+    llm = LLMNode(model, prompt, memory, tools, db)
+    return llm
+
+# Helper function to create a node for a given agent
+def agent_node(state, agent, name) -> AgentState:
+    result = agent.__call__(state)
+    # We convert the agent output into a format that is suitable to append to the global state
+    if isinstance(result, ToolMessage):
+        pass
+    else:
+        pass
+    return {
+        "messages": result['messages'],
+        "user_id": state['user_id'],
+        "session_id": state['session_id'],
+        "sender": name,
+        "current_agent": name
+    }
