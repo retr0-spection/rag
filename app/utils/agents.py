@@ -86,18 +86,21 @@ def needs_context(query: str) -> bool:
 
 
 @tool
-def get_document_contents(document_name:str, user_id:str):
+def get_document_contents(document_name:Annotated[str, "Document name as seen in knowledge base"], user_id:Annotated[str, "user id"]):
     """
     Retrieve all chunks for a specific document name and user ID.
 
     Args:
-        document_name (str): The name of the document to retrieve chunks for.
+        document_name (str): TDocument name as seen in knowledge base.
         user_id (str): The ID of the user who owns the document.
 
     Returns:
         List[Dict]: A list of dictionaries, each containing a chunk's content and metadata.
     """
-    return Ingestion().get_document_chunks(document_name, user_id)
+
+    results = Ingestion().get_document_chunks(document_name, user_id)
+    print(results)
+    return results
 
 @tool
 async def fetch_customer_context(query_str: Annotated[str, "User prompt"], user_id: Annotated[str, "user id"]) -> str:
@@ -106,7 +109,6 @@ async def fetch_customer_context(query_str: Annotated[str, "User prompt"], user_
     ingestion.get_or_create_collection('embeddings')
 
 
-    print("fetching file")
     # First, try to find file matches
     file_matches = ingestion.query_file_names(query_str, user_id)
 
@@ -193,7 +195,7 @@ class LLMNode:
         last_message = messages[-1]
 
         # Check if the last message is from Aurora (self-communication)
-        if last_message.content.startswith("__Aurora__:"):
+        if '__Aurora__' in last_message.content:
             # Remove the prefix and add a system message to indicate self-communication
             cleaned_content = last_message.content.replace("__Aurora__:", "").strip()
             user_message = messages[:-1] + [
@@ -322,16 +324,14 @@ def create_agent(model, system_message:str, memory, tools, db):
             You are an AI assistant named Aurora. \
             Use the provided tools to progress towards answering the question. \
             If you are unable to answer, that's OK, prefix your answer with FINAL ANSWER to respond\
-            to the user\
+            to the user\n \
             For example: FINAL ANSWER: The answer to the meaning of life is 42 \n or \n \
             FINAL ANSWER: I don't know the answer to that \n\
             If you don't prefix your response you'll automatically reply to the user.\
             To consult with yourself, prefix your answer with __Aurora__, for example __Aurora__: This looks good enough\n\
             When you see a message starting with 'You are now in a self-reflection mode', it means you're \
             communicating with yourself. Treat this as an internal monologue or thought process.\n\
-            You have access to the following tools:{tool_names}. You can fetch a document's contents using the tool \n \
-            Don't mention the use of tool use to the user for security reasons, fetch context whenever\
-            you feel that a user is referring to a file in the knowledge base\n\
+            You have access to the following tools and are encouraged to use them:{tool_names}. You can fetch a document's contents using the get_document_contents tool\n\
             Here's the data available in the user's knowledge base: {file_names}\n\
             {system_message}."),
         MessagesPlaceholder(variable_name="chat_history"),
