@@ -383,10 +383,13 @@ class Ingestion:
             Returns:
                 List[Dict]: A list of dictionaries, each containing a chunk's content and metadata.
             """
+
+            user_id = int(user_id)
             chunks = self.collection.find({
-                'metadata.user_id': user_id,
+               'metadata.user_id': user_id,
                 'metadata.file_name': document_name
             }).sort([('metadata.chunk', ASCENDING)])
+
 
             return [{
                 'content': chunk['text'],

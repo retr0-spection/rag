@@ -90,8 +90,10 @@ async def send_message(params: SendMessageParams, db: Session = Depends(get_db),
         # Process the message with the LangGraph system
         async for chunk in process_message(system, params.message, user.id, params.session_id):
             if "__token__:" in chunk:
+                chunk = chunk.replace("__token__:", "").strip()
                 yield f"data: {json.dumps({'token': chunk})}\n\n"
             elif "__error__:" in chunk:
+                chunk = chunk.replace("__error__:", "").strip()
                 yield f"data: {json.dumps({'error': "I apologise, but I couldn't process your request."})}\n\n"
 
 
@@ -111,7 +113,7 @@ def get_chat_history(session_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Chat session not found")
 
     # Fetch all messages in the session
-    messages = db.query(Message).filter_by(session_id=session_id).order_by(Message.timestamp).all()
+    messages = db.query(Message).filter_by(session_id=session_id, hidden=False).order_by(Message.timestamp).all()
 
     return {
         "session_id": session_id,
@@ -165,5 +167,5 @@ async def generate_ai_title(messages, llm):
         template="Summarize the following conversation in a short, concise title of 5-7 words(only provide the concise summary, nothing else):\n\n{chat_history}"
     )
     chat_history = "\n".join([f"{msg.sender}: {msg.content}" for msg in messages])
-    response = await llm.apredict(prompt.format(chat_history=chat_history))
-    return response.strip()
+    response = await llm.ainvoke(prompt.format(chat_history=chat_history))
+    return response.content.strip()

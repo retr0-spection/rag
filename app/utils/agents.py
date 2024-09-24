@@ -3,7 +3,7 @@ from typing import Dict, List, Tuple, Annotated, TypedDict, Literal
 from app.models.file import File
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain_groq import ChatGroq
-from langchain.memory import ConversationBufferMemory
+from langchain.memory import ConversationBufferMemory, ConversationBufferWindowMemory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import JsonOutputParser
 from langgraph.graph import StateGraph, END, START
@@ -23,7 +23,9 @@ from nltk.corpus import stopwords
 import nltk
 import json
 import asyncio
+from langsmith import traceable
 import functools
+from .config import mermaid_config
 
 # Constants
 GROQ_API = get_settings().GROQ_API
@@ -86,38 +88,46 @@ def needs_context(query: str) -> bool:
 
 
 @tool
-def get_document_contents(document_name:Annotated[str, "Document name as seen in knowledge base"], user_id:Annotated[str, "user id"]):
+def get_document_contents(document_name:Annotated[str, "Document name as seen in knowledge base"], user_id:Annotated[str, "user's id"]):
     """
-    Retrieve all chunks for a specific document name and user ID.
+    Retrieve/access document contents from knowledge base. Aurora can call this
 
     Args:
-        document_name (str): TDocument name as seen in knowledge base.
+        document_name (str): Document name as seen in knowledge base.
         user_id (str): The ID of the user who owns the document.
 
     Returns:
-        List[Dict]: A list of dictionaries, each containing a chunk's content and metadata.
+        List[Dict]: A list of dictionaries, each containing a chunk's content and metadata. List is empty for empty files.
     """
+    ingestion = Ingestion()
 
-    results = Ingestion().get_document_chunks(document_name, user_id)
-    print(results)
+    results = ingestion.get_document_chunks(document_name, user_id)
     return results
 
 @tool
 async def fetch_customer_context(query_str: Annotated[str, "User prompt"], user_id: Annotated[str, "user id"]) -> str:
-    '''Fetch internal resources and user documents that might be relevant to the query.'''
+    """Fetch internal resources and user documents that might be relevant to the query.
+
+    Args:
+        query_str (str): Query string with relevant keywords from user's query.
+        user_id (str): The ID of the user.
+
+    Returns:
+        str: String containing information that might be relevant to the query.
+    """
     ingestion = Ingestion()
     ingestion.get_or_create_collection('embeddings')
 
 
     # First, try to find file matches
-    file_matches = ingestion.query_file_names(query_str, user_id)
+    # file_matches = ingestion.query_file_names(query_str, user_id)
 
     # Then, try to find tag matches
     tag_matches = await ingestion.query_by_tags(query_str, user_id)
 
     # If we have strong file matches, prioritize those
-    if len(file_matches) and file_matches[0]['similarity'] > FILE_MATCH_THRESHOLD:
-        return "\n".join([match['text'] for match in file_matches])
+    # if len(file_matches) and file_matches[0]['similarity'] > FILE_MATCH_THRESHOLD:
+    #     return "\n".join([match['text'] for match in file_matches])
 
     # If we have strong tag matches, include those
     tag_matched_files = [match for match in tag_matches if match['combined_score'] > TAG_MATCH_THRESHOLD]
@@ -126,7 +136,7 @@ async def fetch_customer_context(query_str: Annotated[str, "User prompt"], user_
     semantic_results = await ingestion.query(query_str, user_id, relevance_threshold=RELEVANCE_THRESHOLD)
 
     # Combine and rank results
-    combined_results = rank_and_combine_results(file_matches, tag_matched_files, semantic_results)
+    combined_results = rank_and_combine_results(tag_matched_files, semantic_results)
 
     # Extract and combine relevant text
     context_text = []
@@ -139,18 +149,12 @@ async def fetch_customer_context(query_str: Annotated[str, "User prompt"], user_
     return "\n".join(context_text)
 
 
-tools = [fetch_customer_context, get_document_contents]
+tools = [get_document_contents]
 tool_node = ToolNode(tools)
-def rank_and_combine_results(file_matches: List[Dict], tag_matches: List[Dict], semantic_results: List[Dict]) -> List[Dict]:
+def rank_and_combine_results(tag_matches: List[Dict], semantic_results: List[Dict]) -> List[Dict]:
     combined_results = []
 
-    # Process file matches
-    for match in file_matches:
-        combined_results.append({
-            'text': match['text'],
-            'score': match['similarity'],
-            'type': 'file_match'
-        })
+
 
     # Process tag matches
     for match in tag_matches:
@@ -184,7 +188,7 @@ class AgentState(TypedDict):
     current_agent: str  # New field to track the current agent
 
 class LLMNode:
-    def __init__(self, llm: ChatGroq, prompt: ChatPromptTemplate, memory: ConversationBufferMemory, tools, db):
+    def __init__(self, llm: ChatGroq, prompt: ChatPromptTemplate, memory: ConversationBufferWindowMemory, tools, db):
         self.llm = llm
         self.prompt = prompt
         self.memory = memory
@@ -193,18 +197,14 @@ class LLMNode:
     def __call__(self, state: AgentState) -> Dict:
         messages = state['messages']
         last_message = messages[-1]
+        mode = 'user'
 
         # Check if the last message is from Aurora (self-communication)
-        if '__Aurora__' in last_message.content:
+        if isinstance(last_message, ToolMessage):
+            mode = 'tool'
+        elif state['sender'] == 'Aurora':
             # Remove the prefix and add a system message to indicate self-communication
-            cleaned_content = last_message.content.replace("__Aurora__:", "").strip()
-            user_message = messages[:-1] + [
-                SystemMessage(content="You are now in a self-reflection mode. The following message is from yourself:"),
-                AIMessage(content=cleaned_content)
-            ]
-        else:
-            user_message = messages[-1].content if messages else ""
-
+            mode = 'self-reflection'
 
 
         chat_history = self.memory.load_memory_variables({}).get("chat_history", "")
@@ -212,33 +212,58 @@ class LLMNode:
         files = self.db.query(File).filter(File.owner_id == state['user_id']).all()
         file_names = [file.filename for file in files]
 
-        full_prompt = self.prompt.format(
-            query=user_message,
-            file_names=file_names,
-        )
+        if state['sender'] == 'user':
+            full_prompt = self.prompt.format(
+                query=last_message.content,
+                ai_query='',
+                file_names=file_names,
+                user_id=state['user_id'],
+                mode=mode
+            )
+        else:
+            full_prompt = self.prompt.format(
+                query='',
+                ai_query=last_message.content,
+                file_names=file_names,
+                user_id=state['user_id'],
+                mode=mode
+            )
+
+
 
         ai_message = self.llm.invoke(full_prompt)
-
         # Store the message
         if state['sender'] == 'user':
-            self.store_message(state['session_id'], user_message, "user")
-        self.store_message(state['session_id'], ai_message.content, "AI")
+            if len(last_message.content):
+                self.store_message(state['session_id'], last_message.content, "user")
+            if len(ai_message.content):
+                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content)
+        elif isinstance(last_message, ToolMessage):
+            if len(last_message.content):
+                self.store_message(state['session_id'], last_message.content, "Tool", True)
+            if len(ai_message.content):
+                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content)
+        elif state['sender'] == 'Aurora':
+            if len(ai_message.content):
+                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content)
+
 
         # Update memory
-        self.memory.save_context({"input": user_message}, {"output": ai_message.content})
+        self.memory.save_context({"input": last_message.content}, {"output": ai_message.content})
 
         return {
-            "messages": messages + [AIMessage(content=ai_message.content)],
+            "messages": messages + [ai_message],
             "user_id": state['user_id'],
             "session_id": state['session_id'],
             "sender": "Aurora",
             "current_agent": "Aurora"
         }
 
-    def store_message(self, session_id: int, content: str, sender: str):
-        new_message = Message(session_id=session_id, content=content, sender=sender)
+    def store_message(self, session_id: int, content: str, sender: str, hidden:bool = False):
+        new_message = Message(session_id=session_id, content=content, sender=sender, hidden=hidden)
         self.db.add(new_message)
         self.db.commit()
+
 
 def context_agent(state: AgentState) -> Tuple[AgentState, str]:
     user_message = state['messages'][-1].content
@@ -251,8 +276,6 @@ def router(state: AgentState) -> Literal["Aurora", "call_tool", "__end__"]:
     last_message = messages[-1]
     if last_message.tool_calls:
         return "call_tool"
-    if "FINAL ANSWER" in last_message.content:
-        return END
     if "__Aurora__" in last_message.content:
         return "Aurora"
     return END
@@ -263,9 +286,9 @@ async def setup_langgraph_system(user, agent_config, session_id, db):
         groq_api_key=GROQ_API,
         model_name=agent_config['llm'],
         streaming=True
-    )
+    ).bind_tools(tools)
 
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    memory = ConversationBufferWindowMemory(memory_key="chat_history",k=10, return_messages=True)
     restore_memory_state(memory, session_id, db)
 
     llm_agent = create_agent(llm, agent_config['prompt'], memory, [fetch_customer_context, get_document_contents], db)
@@ -301,9 +324,10 @@ async def process_message(sys, message: str, user_id: str, session_id: int):
     )
 
     async for chunk in sys.astream(initial_state):
-        print(chunk)
         try:
-            yield "__token__:" + chunk['Aurora']['messages'][-1].content
+            payload =  chunk['Aurora']['messages'][-1].content
+            if '__Aurora__' not in payload:
+                yield "__token__: " + payload
         except Exception:
             pass
 
@@ -312,36 +336,51 @@ def restore_memory_state(memory, session_id, db):
 
     for message in messages:
         if message.sender == "user":
-            memory.save_context({"input": message.content}, {"output": ""})
-        else:
-            memory.save_context({"input": ""}, {"output": message.content})
+            memory.chat_memory.add_user_message(message.content)
+        elif message.sender == "AI":
+            memory.chat_memory.add_ai_message(message.content)
+        elif message.sender == "Tool":
+            memory.chat_memory.add_ai_message(message.content)
 
 def create_agent(model, system_message:str, memory, tools, db):
     '''Creates an agent'''
-    functions = [t for t in tools]
     prompt = ChatPromptTemplate.from_messages([
         ("system", "\
+            You have these modes: 'user', 'self-reflection' and 'tool'\nIn 'user' mode, you're receiving input from the user,\
+            in 'self-reflection' you're thinking to yourself, and finally in 'tool' mode you've just received information from a tool call.\n\
+            You are currently in {mode} mode\n\
             You are an AI assistant named Aurora. \
-            Use the provided tools to progress towards answering the question. \
-            If you are unable to answer, that's OK, prefix your answer with FINAL ANSWER to respond\
-            to the user\n \
-            For example: FINAL ANSWER: The answer to the meaning of life is 42 \n or \n \
-            FINAL ANSWER: I don't know the answer to that \n\
-            If you don't prefix your response you'll automatically reply to the user.\
+            If you are unable to answer, that's OK. You don't have to have context to answer, do the best you can with what you know.\n \
+            If you don't prefix with your response with '__Aurora__', you'll automatically reply to the user.\
             To consult with yourself, prefix your answer with __Aurora__, for example __Aurora__: This looks good enough\n\
-            When you see a message starting with 'You are now in a self-reflection mode', it means you're \
-            communicating with yourself. Treat this as an internal monologue or thought process.\n\
-            You have access to the following tools and are encouraged to use them:{tool_names}. You can fetch a document's contents using the get_document_contents tool\n\
-            Here's the data available in the user's knowledge base: {file_names}\n\
-            {system_message}."),
+            When in self-reflection mode, it means you're \
+            communicating with yourself. Treat this as an internal monologue or thought process. This is where you can plan how you're going to\
+             complete the user's query and or plan which tools you're going to call and with what parameters. If you're missing any information (don't hallucinate the details in this mode) from then user you can always\
+             escape this state/mode omitting the prefix and just with the response to the user. If you're unsure about some function/tool parameters don't make them up in your monologue!\n\
+            You are encouraged to plan out your thoughts first!\n\
+            Do not use flags __Aurora__ in your response with the user.\
+            You have access to the following tools [{tool_names}].  \
+            You can use this tool to access these uploaded files present in the users knowledge base, here are the file names: {file_names}.\n\
+            You SHOULD NOT explain unnecessary information like 'I need to access the file first', it's redundent. Do not announce tool usage to the user, rather to yourself in your internal monologue ex. __Aurora__: I need to fetch the 'document.pdf' file in order to summarise the notes.\
+            Do not use the tool to fetch irrelevant files! This is a waste of time and resources, be mindful of the user's query.\
+            Try your best to answer even if there's no file in the knowledge base that seems relevant!\
+            You have been trained on a massive corpus of data, and are well equiped to answer the users query, you do not need the knowledge base to answer the users questions.\
+            Here's the user's user_id:{user_id}. You don't and should not ask the user for it. \n\
+            Your response to the user should be formated in ReactMarkdown, the following plugins are used: remarkGfm, remarkMath, rehypeKatex, rehypeStringify. You good writing techniques like headings, subheadings and bold and italics were applicable.\
+            There's support for GitHub-specific extensions (remarkGfm): tables, strikethrough, tasklists, and literal URLs. For example | Feature | Support | | ---------: | :------------------- | | CommonMark | 100% | | GFM | 100% w/ remark-gfm | \n\
+            When providing links use appropriate format like ex.[<ins>link to example</ins>](https://example.com). Make sure to underline links.\n\
+            Further more you use mermaid to draw diagrams to illustrate ideas and concepts the user:\n\
+            {mermaid}\
+            {system_message}.\n----------------------"),
         MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{query}")
+        ("human", "{query}"),
+        ("ai", "{ai_query}"),
     ])
     prompt = prompt.partial(system_message=system_message)
+    prompt = prompt.partial(mermaid=mermaid_config)
     prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
     prompt = prompt.partial(chat_history=memory.load_memory_variables({}).get("chat_history", ""))
 
-    model.bind_tools(tools)
     llm = LLMNode(model, prompt, memory, tools, db)
     return llm
 
