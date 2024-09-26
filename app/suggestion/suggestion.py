@@ -1,5 +1,6 @@
 import asyncio
 from typing import List, Dict
+from app import suggestion
 from app.ingestion.utils import Ingestion
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -10,14 +11,37 @@ from pymongo import MongoClient
 
 class EnhancedTopicSuggestionSystem:
     def __init__(self, collection_name="embeddings"):
-        self.client = MongoClient('mongodb://localhost:27017/')
-        self.db = self.client['document_db']
-        self.collection = self.db[collection_name]
-        self.model = SentenceTransformer('all-mpnet-base-v2')
-        self.tfidf_vectorizer = TfidfVectorizer()
-        self.file_name_vectorizer = TfidfVectorizer()
-        self.llm = AsyncGroq(api_key=get_settings().GROQ_API)
+        # self.client = MongoClient('mongodb://localhost:27017/')
+        # self.db = self.client['document_db']
+        # self.collection = self.db[collection_name]
+        # self.model = SentenceTransformer('all-mpnet-base-v2')
+        # self.tfidf_vectorizer = TfidfVectorizer()
+        # self.file_name_vectorizer = TfidfVectorizer()
+        # self.llm = AsyncGroq(api_key=get_settings().GROQ_API)
         self.ingestion = Ingestion(collection_name)
+
+    def generate_static_suggestions(self):
+        suggestions = [
+            {
+                "title": "Goal Setting for Success",
+                "userPrompt": "Hi Aurora, can you help me create a simple step-by-step plan to achieve my personal goals for the next 6 months?"
+            },
+            {
+                "title": "Favorite Ice Cream Survey",
+                "userPrompt": "Hi Aurora, can you generate a pie chart showing the most popular ice cream flavors based on recent surveys?"
+            },
+            {
+                "title": "Morning Routine Optimization",
+                "userPrompt": "Hi Aurora, can you suggest an optimized morning routine to improve productivity and well-being?"
+            },
+            {
+                "title": "Social Media App Flow",
+                "userPrompt": "Hi Aurora, can you create a sequence diagram showing the process from user signup to posting a status update on a social media app?"
+            }
+        ]
+
+
+        return suggestions
 
     async def generate_topic_suggestions(self, user_id: str, num_suggestions: int = 5) -> List[Dict]:
             # Get all tags for the user's documents

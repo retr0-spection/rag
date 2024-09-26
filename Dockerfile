@@ -13,7 +13,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Make port 8080 available to the world outside this container
 EXPOSE 8080
 
-# Define environment variable
+# Set environment variable for Alembic to locate the correct config
+ENV ALEMBIC_CONFIG=/app/alembic.ini
 
-# Run app.py when the container launches
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+ENV DATABASE_URL=postgresql://postgres:8vxH8bKEM0dQd0k25HZh@database-1.cna2i0i20lkp.af-south-1.rds.amazonaws.com:5432/database-1
+
+# Run Alembic migrations and then start the server
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8080"]

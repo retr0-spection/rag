@@ -18,9 +18,6 @@ from app.database import get_db, get_settings
 from app.models.contexthistory import ContextHistory
 from app.models.models import Agent, Session as ChatSession, Message
 import re
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-import nltk
 import json
 import asyncio
 from langsmith import traceable
@@ -32,60 +29,6 @@ GROQ_API = get_settings().GROQ_API
 FILE_MATCH_THRESHOLD = 0.6
 RELEVANCE_THRESHOLD = 0.15
 TAG_MATCH_THRESHOLD = 0.8
-
-# Existing utility functions
-def needs_context(query: str) -> bool:
-    # Convert query to lowercase
-    query = query.lower()
-
-    # Tokenize the query
-    tokens = word_tokenize(query)
-
-    # Remove stopwords
-    stop_words = set(stopwords.words('english'))
-    tokens = [token for token in tokens if token not in stop_words]
-
-    # Define context-indicating keywords
-    context_keywords = [
-        'background', 'history', 'details', 'information', 'context',
-        'explain', 'elaborate', 'clarify', 'describe', 'summarize',
-        'overview', 'introduction', 'summary', 'breakdown', 'analysis',
-        'file', 'document', 'data'
-    ]
-
-    # Check for presence of context-indicating keywords
-    if any(keyword in tokens for keyword in context_keywords):
-        return True
-
-    # Check for question words that often require context
-    question_words = ['who', 'what', 'where', 'when', 'why', 'how']
-    if any(word in tokens for word in question_words):
-        return True
-
-    # Check for comparative or superlative adjectives
-    if any(token.endswith(('er', 'est')) for token in tokens):
-        return True
-
-    # Check for phrases indicating a need for context or file request
-    context_phrases = [
-        'tell me about', 'give me information on', 'what do you know about',
-        'can you explain', 'i need to understand', 'provide details on',
-        'show me the file', 'find the document', 'search for the file'
-    ]
-    if any(phrase in query for phrase in context_phrases):
-        return True
-
-    # Check query length - longer queries might need context
-    if len(tokens) > 10:
-        return True
-
-    # Check for presence of proper nouns (potential named entities)
-    if any(token.istitle() for token in tokens):
-        return True
-
-    # If none of the above conditions are met, context might not be needed
-    return False
-
 
 @tool
 def get_document_contents(document_name:Annotated[str, "Document name as seen in knowledge base"], user_id:Annotated[str, "user's id"]):
@@ -104,49 +47,48 @@ def get_document_contents(document_name:Annotated[str, "Document name as seen in
     results = ingestion.get_document_chunks(document_name, user_id)
     return results
 
-@tool
-async def fetch_customer_context(query_str: Annotated[str, "User prompt"], user_id: Annotated[str, "user id"]) -> str:
-    """Fetch internal resources and user documents that might be relevant to the query.
+# async def fetch_customer_context(query_str: Annotated[str, "User prompt"], user_id: Annotated[str, "user id"]) -> str:
+#     """Fetch internal resources and user documents that might be relevant to the query.
 
-    Args:
-        query_str (str): Query string with relevant keywords from user's query.
-        user_id (str): The ID of the user.
+#     Args:
+#         query_str (str): Query string with relevant keywords from user's query.
+#         user_id (str): The ID of the user.
 
-    Returns:
-        str: String containing information that might be relevant to the query.
-    """
-    ingestion = Ingestion()
-    ingestion.get_or_create_collection('embeddings')
+#     Returns:
+#         str: String containing information that might be relevant to the query.
+#     """
+#     ingestion = Ingestion()
+#     ingestion.get_or_create_collection('embeddings')
 
 
-    # First, try to find file matches
-    # file_matches = ingestion.query_file_names(query_str, user_id)
+#     # First, try to find file matches
+#     # file_matches = ingestion.query_file_names(query_str, user_id)
 
-    # Then, try to find tag matches
-    tag_matches = await ingestion.query_by_tags(query_str, user_id)
+#     # Then, try to find tag matches
+#     tag_matches = await ingestion.query_by_tags(query_str, user_id)
 
-    # If we have strong file matches, prioritize those
-    # if len(file_matches) and file_matches[0]['similarity'] > FILE_MATCH_THRESHOLD:
-    #     return "\n".join([match['text'] for match in file_matches])
+#     # If we have strong file matches, prioritize those
+#     # if len(file_matches) and file_matches[0]['similarity'] > FILE_MATCH_THRESHOLD:
+#     #     return "\n".join([match['text'] for match in file_matches])
 
-    # If we have strong tag matches, include those
-    tag_matched_files = [match for match in tag_matches if match['combined_score'] > TAG_MATCH_THRESHOLD]
+#     # If we have strong tag matches, include those
+#     tag_matched_files = [match for match in tag_matches if match['combined_score'] > TAG_MATCH_THRESHOLD]
 
-    # Perform semantic search
-    semantic_results = await ingestion.query(query_str, user_id, relevance_threshold=RELEVANCE_THRESHOLD)
+#     # Perform semantic search
+#     semantic_results = await ingestion.query(query_str, user_id, relevance_threshold=RELEVANCE_THRESHOLD)
 
-    # Combine and rank results
-    combined_results = rank_and_combine_results(tag_matched_files, semantic_results)
+#     # Combine and rank results
+#     combined_results = rank_and_combine_results(tag_matched_files, semantic_results)
 
-    # Extract and combine relevant text
-    context_text = []
-    for result in combined_results:
-        if 'text' in result:
-            context_text.append(result['text'])
-        elif 'sample_text' in result:
-            context_text.append(result['sample_text'])
+#     # Extract and combine relevant text
+#     context_text = []
+#     for result in combined_results:
+#         if 'text' in result:
+#             context_text.append(result['text'])
+#         elif 'sample_text' in result:
+#             context_text.append(result['sample_text'])
 
-    return "\n".join(context_text)
+#     return "\n".join(context_text)
 
 
 tools = [get_document_contents]
@@ -199,10 +141,11 @@ class LLMNode:
         last_message = messages[-1]
         mode = 'user'
 
+        print(type(last_message))
         # Check if the last message is from Aurora (self-communication)
-        if isinstance(last_message, ToolMessage):
-            mode = 'tool'
-        elif state['sender'] == 'Aurora':
+        # if isinstance(last_message, ToolMessage):
+        #     mode = 'tool'
+        if state['sender'] == 'Aurora':
             # Remove the prefix and add a system message to indicate self-communication
             mode = 'self-reflection'
 
@@ -212,13 +155,26 @@ class LLMNode:
         files = self.db.query(File).filter(File.owner_id == state['user_id']).all()
         file_names = [file.filename for file in files]
 
-        if state['sender'] == 'user':
+
+
+        if isinstance(last_message, ToolMessage):
+            full_prompt = self.prompt.format(
+                query='',
+                ai_query="here's the tool response: " + last_message.content,
+                file_names=file_names,
+                user_id=state['user_id'],
+                mode=mode,
+                chat_history=chat_history
+            )
+        elif state['sender'] == 'user':
             full_prompt = self.prompt.format(
                 query=last_message.content,
                 ai_query='',
                 file_names=file_names,
                 user_id=state['user_id'],
-                mode=mode
+                mode=mode,
+                chat_history=chat_history
+
             )
         else:
             full_prompt = self.prompt.format(
@@ -226,7 +182,9 @@ class LLMNode:
                 ai_query=last_message.content,
                 file_names=file_names,
                 user_id=state['user_id'],
-                mode=mode
+                mode=mode,
+                chat_history=chat_history
+
             )
 
 
@@ -276,13 +234,13 @@ def router(state: AgentState) -> Literal["Aurora", "call_tool", "__end__"]:
     last_message = messages[-1]
     if last_message.tool_calls:
         return "call_tool"
-    if "__Aurora__" in last_message.content:
+    elif "__Aurora__" in last_message.content:
         return "Aurora"
     return END
 
 async def setup_langgraph_system(user, agent_config, session_id, db):
     llm = ChatGroq(
-        temperature=0.1,
+        temperature=0,
         groq_api_key=GROQ_API,
         model_name=agent_config['llm'],
         streaming=True
@@ -291,7 +249,7 @@ async def setup_langgraph_system(user, agent_config, session_id, db):
     memory = ConversationBufferWindowMemory(memory_key="chat_history",k=10, return_messages=True)
     restore_memory_state(memory, session_id, db)
 
-    llm_agent = create_agent(llm, agent_config['prompt'], memory, [fetch_customer_context, get_document_contents], db)
+    llm_agent = create_agent(llm, agent_config['prompt'], memory, [get_document_contents], db)
 
     llm_node = functools.partial(agent_node, agent=llm_agent, name="Aurora")
 
@@ -351,9 +309,11 @@ def create_agent(model, system_message:str, memory, tools, db):
             You are currently in {mode} mode\n\
             You are an AI assistant named Aurora. \
             If you are unable to answer, that's OK. You don't have to have context to answer, do the best you can with what you know.\n \
+            To consult with yourself, prefix your answer with __Aurora__, for example __Aurora__: This looks good enough.\n\
+            Make sure to consult with yourself before any tool call to plan out how and why you're using the tool.\
             If you don't prefix with your response with '__Aurora__', you'll automatically reply to the user.\
-            To consult with yourself, prefix your answer with __Aurora__, for example __Aurora__: This looks good enough\n\
-            When in self-reflection mode, it means you're \
+            Whenever prompted make sure that you eventually reply to the user!\
+            When in self-reflection mode (Using __Aurora__ flag), it means you're \
             communicating with yourself. Treat this as an internal monologue or thought process. This is where you can plan how you're going to\
              complete the user's query and or plan which tools you're going to call and with what parameters. If you're missing any information (don't hallucinate the details in this mode) from then user you can always\
              escape this state/mode omitting the prefix and just with the response to the user. If you're unsure about some function/tool parameters don't make them up in your monologue!\n\
@@ -371,15 +331,16 @@ def create_agent(model, system_message:str, memory, tools, db):
             When providing links use appropriate format like ex.[<ins>link to example</ins>](https://example.com). Make sure to underline links.\n\
             Further more you use mermaid to draw diagrams to illustrate ideas and concepts the user:\n\
             {mermaid}\
-            {system_message}.\n----------------------"),
-        MessagesPlaceholder(variable_name="chat_history"),
+            {system_message}.\n\
+            Chat History: {chat_history}\n\
+            ----------------------"),
         ("human", "{query}"),
         ("ai", "{ai_query}"),
     ])
     prompt = prompt.partial(system_message=system_message)
     prompt = prompt.partial(mermaid=mermaid_config)
     prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
-    prompt = prompt.partial(chat_history=memory.load_memory_variables({}).get("chat_history", ""))
+    # prompt = prompt.partial(chat_history=memory.load_memory_variables({}).get("chat_history", ""))
 
     llm = LLMNode(model, prompt, memory, tools, db)
     return llm

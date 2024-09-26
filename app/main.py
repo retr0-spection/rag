@@ -8,16 +8,11 @@ from app.models import models
 from sqlalchemy.orm import Session
 import logging
 import os
-import nltk
 from fastapi.middleware.cors import CORSMiddleware
 
 logging.getLogger('passlib').setLevel(logging.ERROR)
 
 
-
-nltk.download('stopwords')
-# Download NLTK data (run this once)
-nltk.download('punkt')
 
 app = FastAPI()
 origins = [

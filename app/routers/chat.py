@@ -15,9 +15,6 @@ from langchain_groq import ChatGroq
 from langchain.memory import ConversationBufferMemory
 from langchain.callbacks import AsyncIteratorCallbackHandler
 import re
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-import nltk
 import json
 import asyncio
 

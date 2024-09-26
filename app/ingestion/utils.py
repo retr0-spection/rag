@@ -10,23 +10,23 @@ import re
 from PyPDF2 import PdfReader
 from docx import Document
 from bs4 import BeautifulSoup
-import nltk
-from nltk.tokenize import sent_tokenize
 import mimetypes
-from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from fuzzywuzzy import fuzz
+# from fuzzywuzzy import fuzz
 from groq import AsyncGroq
+import requests
 
 # Create a temporary directory
 temp_dir = tempfile.mkdtemp()
 
 # MongoDB connection
-client = MongoClient('mongodb://localhost:27017/')
-db = client['document_db']
 GROQ_API = get_settings().GROQ_API
-
+MONGO_DB = get_settings().MONGO_DB
+client = MongoClient(MONGO_DB)
+db = client['document_db']
+HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-mpnet-base-v2"
+HUGGINGFACE_API_KEY = get_settings().HUGGINGFACE_API_KEY  # Make sure to add this to your settings
 
 class Ingestion:
     def __init__(self, collection_name="embeddings"):
@@ -34,7 +34,6 @@ class Ingestion:
         if collection_name not in db.list_collection_names():
             # Create an ascending index on the embedding field
             self.collection.create_index([("embeddings", ASCENDING)], background=True)
-        self.model = SentenceTransformer('all-mpnet-base-v2')
         self.tfidf_vectorizer = TfidfVectorizer()
         self.file_name_vectorizer = TfidfVectorizer()
         self.llm = AsyncGroq(api_key=GROQ_API)
@@ -88,11 +87,20 @@ class Ingestion:
 
         return chunks
 
+    def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+        response = requests.post(HUGGINGFACE_API_URL, headers=headers, json={"inputs": texts})
+
+        if response.status_code != 200:
+            raise ValueError(f"Error from Hugging Face API: {response.text}")
+
+        return response.json()
+
     def add_documents(self, documents: List[str], ids: List[str], metadatas: List[Dict] = None):
         if metadatas is None:
             metadatas = [{}] * len(documents)
 
-        embeddings = self.model.encode(documents)
+        embeddings = self.get_embeddings(documents)
 
         for doc, id, metadata, embedding in zip(documents, ids, metadatas, embeddings):
             self.collection.update_one(
@@ -100,7 +108,7 @@ class Ingestion:
                 {'$set': {
                     'text': doc,
                     'metadata': metadata,
-                    'embedding': embedding.tolist()
+                    'embedding': embedding
                 }},
                 upsert=True
             )
@@ -140,13 +148,13 @@ class Ingestion:
             return soup.get_text()
 
     async def generate_doc_tags(self, text: str) -> List[str]:
-            prompt = f"Generate a list of 5 relevant tags for the following text. Try to use words in the text. Respond with only the tags, separated by commas:\n\n{text}"
-            response = await self.llm.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.1-8b-instant"
-            )
-            tags = response.choices[0].message.content.strip().split(',')
-            return [tag.strip() for tag in tags]
+        prompt = f"Generate a list of 5 relevant tags for the following text. Try to use words in the text. Respond with only the tags, separated by commas:\n\n{text}"
+        response = await self.llm.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.1-8b-instant"
+        )
+        tags = response.choices[0].message.content.strip().split(',')
+        return [tag.strip() for tag in tags]
 
     async def add_file(self, file_path: str, user_id: str):
         try:
@@ -176,7 +184,7 @@ class Ingestion:
             print(f"Error processing file {file_path} for user {user_id}: {str(e)}")
 
     async def query(self, query_text: str, user_id: str, n_results: int = 10, relevance_threshold: float = 0.5):
-        query_embedding = self.model.encode([query_text])[0].tolist()
+        query_embedding = self.get_embeddings([query_text])[0]
 
         # Generate tags for the query
         query_tags = await self.generate_doc_tags(query_text)
@@ -240,39 +248,39 @@ class Ingestion:
         results = list(self.collection.aggregate(pipeline))
         return results
 
-    def query_file_names(self, query_str: str, user_id: str, threshold: float = 0.5) -> List[Dict]:
-        all_docs = self.get_all_documents(user_id)
+    # def query_file_names(self, query_str: str, user_id: str, threshold: float = 0.5) -> List[Dict]:
+    #     all_docs = self.get_all_documents(user_id)
 
-        if not all_docs:
-            return []  # Return an empty list if there are no documents
+    #     if not all_docs:
+    #         return []  # Return an empty list if there are no documents
 
-        file_names = [doc['metadata']['file_name'] for doc in all_docs]
+    #     file_names = [doc['metadata']['file_name'] for doc in all_docs]
 
-        # Check if the vectorizer is fitted, if not, fit it
-        if not hasattr(self.file_name_vectorizer, 'vocabulary_'):
-            self.file_name_vectorizer = TfidfVectorizer()
-            self.file_name_vectorizer.fit(file_names)
+    #     # Check if the vectorizer is fitted, if not, fit it
+    #     if not hasattr(self.file_name_vectorizer, 'vocabulary_'):
+    #         self.file_name_vectorizer = TfidfVectorizer()
+    #         self.file_name_vectorizer.fit(file_names)
 
-        # Calculate TF-IDF similarity
-        tfidf_matrix = self.file_name_vectorizer.transform(file_names)
-        query_vector = self.file_name_vectorizer.transform([query_str])
-        tfidf_similarities = cosine_similarity(query_vector, tfidf_matrix)[0]
+    #     # Calculate TF-IDF similarity
+    #     tfidf_matrix = self.file_name_vectorizer.transform(file_names)
+    #     query_vector = self.file_name_vectorizer.transform([query_str])
+    #     tfidf_similarities = cosine_similarity(query_vector, tfidf_matrix)[0]
 
-        # Calculate fuzzy match ratios
-        fuzzy_ratios = [fuzz.partial_ratio(query_str.lower(), name.lower()) / 100 for name in file_names]
+    #     # Calculate fuzzy match ratios
+    #     fuzzy_ratios = [fuzz.partial_ratio(query_str.lower(), name.lower()) / 100 for name in file_names]
 
-        # Combine TF-IDF and fuzzy matching scores
-        combined_scores = [(tfidf + fuzzy) / 2 for tfidf, fuzzy in zip(tfidf_similarities, fuzzy_ratios)]
+    #     # Combine TF-IDF and fuzzy matching scores
+    #     combined_scores = [(tfidf + fuzzy) / 2 for tfidf, fuzzy in zip(tfidf_similarities, fuzzy_ratios)]
 
-        # Filter and sort results
-        results = [
-            {'text': doc['text'], 'metadata': doc['metadata'], 'score': score, 'similarity':score}
-            for doc, score in zip(all_docs, combined_scores)
-            if score > threshold
-        ]
-        results.sort(key=lambda x: x['score'], reverse=True)
+    #     # Filter and sort results
+    #     results = [
+    #         {'text': doc['text'], 'metadata': doc['metadata'], 'score': score, 'similarity':score}
+    #         for doc, score in zip(all_docs, combined_scores)
+    #         if score > threshold
+    #     ]
+    #     results.sort(key=lambda x: x['score'], reverse=True)
 
-        return results
+    #     return results
 
     async def query_by_tags(self, query_str: str, user_id: str, threshold: float = 0.5) -> List[Dict]:
         # Generate tags for the query

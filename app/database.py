@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     DEBUG: str
     GROQ_API: str
+    HUGGINGFACE_API_KEY:str
+    MONGO_DB: str
 
     model_config = SettingsConfigDict(env_file=".env")
 

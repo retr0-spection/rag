@@ -25,7 +25,8 @@ async def get_chat_suggestions(
         topic_system = EnhancedTopicSuggestionSystem()
         user_id = user.id
 
-        suggested_topics = await topic_system.generate_topic_suggestions(user_id)
+        # suggested_topics = await topic_system.generate_topic_suggestions(user_id)
+        suggested_topics = topic_system.generate_static_suggestions()
 
         if len(suggested_topics) == 0:
             return []
