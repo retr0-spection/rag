@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    DEBUG_DATABASE_URL: str
     DATABASE_URL: str
     DEBUG: str
     GROQ_API: str
@@ -28,8 +29,12 @@ def get_settings():
 
 SQLALCHEMY_DATABASE_URL =  get_settings().DATABASE_URL
 
+# engine = create_engine(
+#     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+# )
+
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+    SQLALCHEMY_DATABASE_URL
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

@@ -8,7 +8,7 @@ class Session(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     agent_id = Column(Integer, ForeignKey('agents.id'), nullable=False)
-    user_id = Column(String, ForeignKey('users.id'))  # Assuming you track users by an ID or handle
+    user_id = Column(Integer, ForeignKey('users.id'))  # Assuming you track users by an ID or handle
     start_time = Column(DateTime, default=datetime.utcnow)
     end_time = Column(DateTime, nullable=True)
     title = Column(String, default="", nullable=True)

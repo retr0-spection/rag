@@ -11,7 +11,7 @@ class Agent(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
     agent_type = Column(String(50), nullable=False, default='chatbot')  # e.g., 'chatbot', 'recommendation', 'nlp'
-    user_id = Column(String, ForeignKey('users.id'))  # Assuming you track users by an ID or handle
+    user_id = Column(Integer, ForeignKey('users.id'))  # Assuming you track users by an ID or handle
     # project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     configuration = Column(JSON, nullable=False)  # stores agent-specific configuration
     description = Column(Text, nullable=True)
