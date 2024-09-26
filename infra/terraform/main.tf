@@ -32,6 +32,12 @@ resource "aws_instance" "app_server" {
               docker run -d -p 80:8080 ${var.DOCKER_USERNAME}/aurora-server:latest
               EOF
 
+  # Specify the root block device size
+  root_block_device {
+    volume_size = 20  # Set the total size to 20 GB
+    volume_type = "gp2"  # General Purpose SSD (optional)
+  }
+
   tags = {
     Name = "AuroraServer"
   }
@@ -40,7 +46,6 @@ resource "aws_instance" "app_server" {
     create_before_destroy = true  # Create new instance before destroying old one
   }
 }
-
 
 # Associate an existing Elastic IP with the instance
 resource "aws_eip_association" "eip_assoc" {
