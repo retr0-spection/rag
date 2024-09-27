@@ -6,4 +6,4 @@
 **/test
 **/sql_app.db
 fly.toml
-.env
+#.env
