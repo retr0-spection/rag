@@ -22,6 +22,7 @@ origins = [
     "http://localhost:5173",
     "http://ec2-13-245-211-234.af-south-1.compute.amazonaws.com",
     "https://ec2-13-245-211-234.af-south-1.compute.amazonaws.com",
+    "*"
 ]
 
 app.add_middleware(
