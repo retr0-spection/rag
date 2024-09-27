@@ -1,5 +1,5 @@
 import asyncio
-from app.database import get_settings
+from app.database import MONGO_DB_URL, get_settings
 import pymongo
 from pymongo import MongoClient, ASCENDING
 from bson.son import SON
@@ -10,19 +10,20 @@ import re
 from PyPDF2 import PdfReader
 from docx import Document
 from bs4 import BeautifulSoup
+from nltk.tokenize import sent_tokenize
 import mimetypes
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-# from fuzzywuzzy import fuzz
 from groq import AsyncGroq
 import requests
+import time
 
 # Create a temporary directory
 temp_dir = tempfile.mkdtemp()
 
 # MongoDB connection
 GROQ_API = get_settings().GROQ_API
-MONGO_DB = get_settings().MONGO_DB
+MONGO_DB = MONGO_DB_URL
 client = MongoClient(MONGO_DB)
 db = client['document_db']
 HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-mpnet-base-v2"
@@ -87,14 +88,29 @@ class Ingestion:
 
         return chunks
 
-    def get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
-        response = requests.post(HUGGINGFACE_API_URL, headers=headers, json={"inputs": texts})
+    def get_embeddings(self, texts: List[str], max_retries: int = 3, retry_delay: int = 5) -> List[List[float]]:
+            headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
 
-        if response.status_code != 200:
-            raise ValueError(f"Error from Hugging Face API: {response.text}")
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(HUGGINGFACE_API_URL, headers=headers, json={"inputs": texts})
 
-        return response.json()
+                    if response.status_code == 200:
+                        return response.json()
+                    elif "is currently loading" in response.text:
+                        estimated_time = response.json().get("estimated_time", retry_delay)
+                        print(f"Model is loading. Retrying in {estimated_time} seconds...")
+                        time.sleep(estimated_time)
+                    else:
+                        response.raise_for_status()
+                except requests.RequestException as e:
+                    if attempt < max_retries - 1:
+                        print(f"Error occurred: {str(e)}. Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                    else:
+                        raise ValueError(f"Max retries reached. Last error: {str(e)}")
+
+            raise ValueError("Failed to get embeddings after multiple attempts")
 
     def add_documents(self, documents: List[str], ids: List[str], metadatas: List[Dict] = None):
         if metadatas is None:
@@ -367,7 +383,7 @@ class Ingestion:
     def delete_document(self, source, user_id: str) -> bool:
         result = self.collection.delete_many({
             'metadata.user_id': user_id,
-            'metadata.source': source
+            'metadata.file_name': source
         })
 
         if result.deleted_count > 0:

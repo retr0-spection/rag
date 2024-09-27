@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     GROQ_API: str
     HUGGINGFACE_API_KEY:str
     MONGO_DB: str
+    DEBUG_MONGO_DB: str
+    AWS_ACCESS_KEY_ID: str
+    AWS_SECRET_ACCESS_KEY: str
+    S3_BUCKET_NAME: str
 
     model_config = SettingsConfigDict(env_file=".env")
 
@@ -27,15 +31,21 @@ def get_settings():
     return Settings()
 
 
-SQLALCHEMY_DATABASE_URL =  get_settings().DATABASE_URL
+DEBUG = get_settings().DATABASE_URL
+MONGO_DB_URL = get_settings().MONGO_DB if not DEBUG else get_settings().DEBUG_MONGO_DB
 
-# engine = create_engine(
-#     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
-# )
+if DEBUG:
+    SQLALCHEMY_DATABASE_URL =  get_settings().DEBUG_DATABASE_URL
+    engine = create_engine(
+        SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+    )
+else:
+    SQLALCHEMY_DATABASE_URL =  get_settings().DATABASE_URL
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL
-)
+    engine = create_engine(
+        SQLALCHEMY_DATABASE_URL
+    )
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

@@ -9,6 +9,9 @@ from sqlalchemy.orm import Session
 import logging
 import os
 from fastapi.middleware.cors import CORSMiddleware
+import nltk
+
+nltk.download('punkt_tab')
 
 logging.getLogger('passlib').setLevel(logging.ERROR)
 
