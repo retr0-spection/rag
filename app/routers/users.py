@@ -46,6 +46,7 @@ def authenticate_user(user: UserInputBase, db: db_dependency):
         else:
             raise HTTPException(status_code=403, detail='incorrect user/password')
     except Exception as e:
+        print(e)
         raise HTTPException(status_code=403, detail='incorrect user/password')
 
 @router.post("/renew")
