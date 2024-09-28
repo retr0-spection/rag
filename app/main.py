@@ -25,6 +25,12 @@ origins = [
     "http://localhost:5173",
     "http://ec2-13-245-211-234.af-south-1.compute.amazonaws.com",
     "https://ec2-13-245-211-234.af-south-1.compute.amazonaws.com",
+    "https://rag.tandemworkflow.com/",
+    "http://rag.tandemworkflow.com/",
+    "http://aurora.tandemworkflow.com/",
+    "https://aurora.tandemworkflow.com/",
+    "https://ragtg-364403995.af-south-1.elb.amazonaws.com",
+    "http://ragtg-364403995.af-south-1.elb.amazonaws.com",
     "*"
 ]
 
