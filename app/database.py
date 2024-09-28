@@ -31,7 +31,7 @@ def get_settings():
     return Settings()
 
 
-DEBUG = get_settings().DATABASE_URL
+DEBUG = int(get_settings().DEBUG)
 MONGO_DB_URL = get_settings().MONGO_DB if not DEBUG else get_settings().DEBUG_MONGO_DB
 
 if DEBUG:

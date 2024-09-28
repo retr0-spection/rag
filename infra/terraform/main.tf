@@ -29,7 +29,7 @@ resource "aws_instance" "app_server" {
               docker pull ${var.DOCKER_USERNAME}/aurora-rag-server:latest
 
               # Run the Docker container
-              docker run -d -p 80:8080 ${var.DOCKER_USERNAME}/aurora-rag-server:latest
+              docker run -d -p 80:8080 --restart unless-stopped ${var.DOCKER_USERNAME}/aurora-rag-server:latest
               EOF
 
   # Specify the root block device size
