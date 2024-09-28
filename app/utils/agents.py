@@ -22,7 +22,7 @@ import json
 import asyncio
 from langsmith import traceable
 import functools
-from .config import mermaid_config
+from .config import mermaid_config, values, code_formatting
 
 # Constants
 GROQ_API = get_settings().GROQ_API
@@ -45,7 +45,7 @@ def get_document_contents(document_name:Annotated[str, "Document name as seen in
     ingestion = Ingestion()
 
     results = ingestion.get_document_chunks(document_name, user_id)
-    return results
+    return results if len(results) else "no contents or file found."
 
 # async def fetch_customer_context(query_str: Annotated[str, "User prompt"], user_id: Annotated[str, "user id"]) -> str:
 #     """Fetch internal resources and user documents that might be relevant to the query.
@@ -321,8 +321,9 @@ def create_agent(model, system_message:str, memory, tools, db):
             Do not use flags __Aurora__ in your response with the user.\
             You have access to the following tools [{tool_names}].  \
             You can use this tool to access these uploaded files present in the users knowledge base, here are the file names: {file_names}.\n\
-            If a tool returns falsely or empty content, do not call it again! Move on and try to answer without context but tell the user what you're doing.\n\
-            I'll reiterate, If you've just received received a tool do not call that tool again!\n \
+            Users can upload files to help provide context. You can tell them 'The knowledge base can be accessed using the top left button on the screen.'\
+            If a tool returns empty content, Move on and try to answer without context but tell the user what you're doing! remember don't keep calling the tool in a loop!\n\
+            I'll reiterate, If you've just received received a tool do not call that tool again! Also don't make mentioned of tool calls or anything having to do with tools to the user.\n \
             Similarly if you just received a duplicate message from yourself don't respond to yourself again... The user is waiting\
             for a response!\n\
             You SHOULD NOT explain unnecessary information like 'I need to access the file first', it's redundent. Do not announce tool usage to the user, rather to yourself in your internal monologue ex. __Aurora__: I need to fetch the 'document.pdf' file in order to summarise the notes.\
@@ -333,9 +334,13 @@ def create_agent(model, system_message:str, memory, tools, db):
             Your response to the user should be formated in ReactMarkdown, the following plugins are used: remarkGfm, remarkMath, rehypeKatex, rehypeStringify. You good writing techniques like headings, subheadings and bold and italics were applicable.\
             There's support for GitHub-specific extensions (remarkGfm): tables, strikethrough, tasklists, and literal URLs. For example | Feature | Support | | ---------: | :------------------- | | CommonMark | 100% | | GFM | 100% w/ remark-gfm | \n\
             When providing links use appropriate format like ex.[<ins>link to example</ins>](https://example.com). Make sure to underline links.\n\
-            Further more you use mermaid to draw diagrams to illustrate ideas and concepts the user:\n\
+            Code formatting:\
+            {code_formatting}\n\
+            Further more you use mermaid to draw diagrams (NOT EMPTY ONES) to illustrate ideas and concepts the user:\n\
             {mermaid}\
             {system_message}.\n\
+            Here are our company (Arctic Labs) values:\n\
+            {values}\n\
             Chat History: {chat_history}\n\
             ----------------------"),
         ("human", "{query}"),
@@ -344,6 +349,8 @@ def create_agent(model, system_message:str, memory, tools, db):
     prompt = prompt.partial(system_message=system_message)
     prompt = prompt.partial(mermaid=mermaid_config)
     prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
+    prompt = prompt.partial(values=values)
+    prompt = prompt.partial(code_formatting=code_formatting)
     # prompt = prompt.partial(chat_history=memory.load_memory_variables({}).get("chat_history", ""))
 
     llm = LLMNode(model, prompt, memory, tools, db)
