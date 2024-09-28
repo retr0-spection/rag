@@ -25,6 +25,7 @@ ENV DEBUG=0
 ENV GROQ_API=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
 ENV HUGGINGFACE_API_KEY=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
 ENV MONGO_DB=mongodb+srv://oratilenailana:V8mZ2yCv60ENPSI3@cluster0.ofp6j.mongodb.net/embeddings?retryWrites=true&w=majority&appName=Cluster0
+ENV DEBUG_MONGO_DB="mongodb://localhost:27017"
 ENV AWS_ACCESS_KEY_ID=AKIAXYKJQNNI6NIKXZKQ
 ENV AWS_SECRET_ACCESS_KEY=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
 ENV S3_BUCKET_NAME=articlabs-files
