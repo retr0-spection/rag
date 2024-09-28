@@ -17,3 +17,8 @@ variable "DOCKER_PASSWORD" {
   description = "Private SSH key for GitHub access"
   type        = string
 }
+
+variable "vpc_id" {
+  description = "Private SSH key for GitHub access"
+  type        = string
+}

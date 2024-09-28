@@ -6,6 +6,20 @@ data "aws_security_group" "existing_sg" {
   name = "launch-wizard-1"  # Replace with your security group name
 }
 
+resource "aws_lb_target_group" "rag_tg" {
+  name     = "RagTG"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = var.vpc_id  # Ensure you specify the correct VPC ID
+  target_type = "ip"     # Assuming your targets are IP addresses
+}
+
+resource "aws_lb_target_group_attachment" "aurora_tg_attach" {
+  target_group_arn = aws_lb_target_group.rag_tg.arn
+  target_id        = aws_instance.app_server.private_ip  # Private IP
+  port             = 80
+}
+
 # Define EC2 instance
 resource "aws_instance" "app_server" {
   ami           = "ami-0b247392537b9d99d" # Amazon Linux 2 AMI
