@@ -20,17 +20,17 @@ jobs:
 
       # Step 3: Build Docker image
       - name: Build Docker image
-        run: docker build -t ${{ secrets.DOCKER_USERNAME }}/aurora-server:${{ github.sha }} .
+        run: docker build -t ${{ secrets.DOCKER_USERNAME }}/aurora-rag-server:${{ github.sha }} .
 
       # Step 4: Push Docker image to Docker Hub
       - name: Push Docker image
-        run: docker push ${{ secrets.DOCKER_USERNAME }}/aurora-server:${{ github.sha }}
+        run: docker push ${{ secrets.DOCKER_USERNAME }}/aurora-rag-server:${{ github.sha }}
 
       # Step 5: Tag Docker image as latest
       - name: Tag image as latest
         run: |
-          docker tag ${{ secrets.DOCKER_USERNAME }}/aurora-server:${{ github.sha }} ${{ secrets.DOCKER_USERNAME }}/aurora-server:latest
-          docker push ${{ secrets.DOCKER_USERNAME }}/aurora-server:latest
+          docker tag ${{ secrets.DOCKER_USERNAME }}/aurora-rag-server:${{ github.sha }} ${{ secrets.DOCKER_USERNAME }}/aurora-rag-server:latest
+          docker push ${{ secrets.DOCKER_USERNAME }}/aurora-rag-server:latest
 
       # Step 6: Set up Terraform
       - name: Set up Terraform

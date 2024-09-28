@@ -26,10 +26,10 @@ resource "aws_instance" "app_server" {
 
               # Pull the Docker image from Docker Hub
               docker login -u "${var.DOCKER_USERNAME}" -p "${var.DOCKER_PASSWORD}"
-              docker pull ${var.DOCKER_USERNAME}/aurora-server:latest
+              docker pull ${var.DOCKER_USERNAME}/aurora-rag-server:latest
 
               # Run the Docker container
-              docker run -d -p 80:8080 ${var.DOCKER_USERNAME}/aurora-server:latest
+              docker run -d -p 80:8080 ${var.DOCKER_USERNAME}/aurora-rag-server:latest
               EOF
 
   # Specify the root block device size
