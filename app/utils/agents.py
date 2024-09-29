@@ -312,6 +312,7 @@ def create_agent(model, system_message:str, memory, tools, db):
             To consult with yourself, prefix your answer with __Aurora__, for example __Aurora__: This looks good enough.\n\
             Make sure to consult with yourself before any tool call to plan out how and why you're using the tool.\
             If you don't prefix with your response with '__Aurora__', you'll automatically reply to the user.\
+            Try to respond to the user as quick as possible so don't over use '__Aurora__' tag.\
             Whenever prompted make sure that you eventually reply to the user!\
             When in self-reflection mode (Using __Aurora__ flag), it means you're \
             communicating with yourself. Treat this as an internal monologue or thought process. This is where you can plan how you're going to\
