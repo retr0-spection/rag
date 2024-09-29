@@ -25,10 +25,9 @@ def create_user(user: UserInputBase, db: db_dependency):
     hashed_password = hash_password(user.password)
     payload = {'email':email, 'hashed_password':hashed_password}
     user = User(**payload)
-    print(type(db))
-    print(db)
     db.add(user)
     db.commit()
+    user =  db.query(User).filter(User.email == email).first()
     token = jwt_manager.issue_token(user_id=user.id)
     return {'message':'Account Created', 'access_token':token}
 
