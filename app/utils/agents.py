@@ -246,7 +246,8 @@ async def setup_langgraph_system(user, agent_config, session_id, db):
         streaming=True
     ).bind_tools(tools)
 
-    memory = ConversationBufferWindowMemory(memory_key="chat_history",k=10, return_messages=True)
+    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    # memory = ConversationBufferWindowMemory(memory_key="chat_history",k=10, return_messages=True)
     restore_memory_state(memory, session_id, db)
 
     llm_agent = create_agent(llm, agent_config['prompt'], memory, [get_document_contents], db)
