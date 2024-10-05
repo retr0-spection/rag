@@ -160,7 +160,7 @@ class LLMNode:
         if isinstance(last_message, ToolMessage):
             full_prompt = self.prompt.format(
                 query='',
-                ai_query="here's the tool response: " + last_message.content,
+                ai_query="here's the tool response (Tell yourself you won't call this tool again): " + last_message.content,
                 file_names=file_names,
                 user_id=state['user_id'],
                 mode=mode,
@@ -232,6 +232,8 @@ def context_agent(state: AgentState) -> Tuple[AgentState, str]:
 def router(state: AgentState) -> Literal["Aurora", "call_tool", "__end__"]:
     messages = state["messages"]
     last_message = messages[-1]
+    if "__exit__" in last_message.content:
+        return END
     if last_message.tool_calls:
         return "call_tool"
     elif "__Aurora__" in last_message.content:
@@ -285,7 +287,9 @@ async def process_message(sys, message: str, user_id: str, session_id: int):
     async for chunk in sys.astream(initial_state):
         try:
             payload =  chunk['Aurora']['messages'][-1].content
-            if '__Aurora__' not in payload:
+            if '__exit__' in payload:
+                yield "__token__: " + payload.split('__exit__')[1]
+            elif '__Aurora__' not in payload:
                 yield "__token__: " + payload
         except Exception:
             pass
@@ -305,16 +309,29 @@ def create_agent(model, system_message:str, memory, tools, db):
     '''Creates an agent'''
     prompt = ChatPromptTemplate.from_messages([
         ("system", "\
-            You have these modes: 'user', 'self-reflection' and 'tool'\nIn 'user' mode, you're receiving input from the user,\
-            in 'self-reflection' you're thinking to yourself, and finally in 'tool' mode you've just received information from a tool call.\n\
-            You are currently in {mode} mode\n\
-            You are an AI assistant named Aurora. You've been developed by Arctic Labs. \
+            You are an AI assistant named Aurora. You've been developed by Arctic Labs to assist the user. \n\
+            You're part of a multi-agent system implemented using langraph and langchain, hence this enables you to route\
+             messages to yourself. You can prefix your message with __Aurora__ flag to route your notes back to yourself.\n\
+             Example:\n\
+             User: Please analyze the uploaded document for me\n\
+             AI: __Aurora__: Before I can do that I need to call the tool first\n\
+             Tool: {{name:'Notes on quantum theory'', 'author'':'Sam James'}}\n\
+             AI: __Aurora__: Looks like the document is about quantum theory. Looks like I have sufficient information to answer the user’s query.__exit__.\n\
+             AI: The document provided is about quantum theory, authored by Sam James!.\n\
+             Notice how messages to self have __Aurora__ prefixing them. And towards ending internal monologue you add __exit__ at the end. \n\
+             Observe your previous thoughts from (prefixed: __Aurora__) and act on them accordingly! Remember to exit chain of thought leaving __exit__ at the end of your message. Hence when you see this __exit__ flag you know that you're producing an answer to the user using the context you've received/retrieved (look in chat_history).\
+             Having seen __exit__ in the last message, you know your chain of thought has ended and you're now generating an answer for the user.\n\
+             Note that if you leave out __Aurora__ you will immediately reply to the user. \
+             LOOP CYCLES:\n\
+             If you notice that there's a loop between yourself and a tool you're calling return to user immediatly.\
+             This allows you to gradually build context which you can use in the next prompt to answer the users query. You are encourage to build up thought processes so try to use the __Aurora__ prefix. As a safe guard do not\
+             send yourself three consecutive messages using the __Aurora__ prefix. This is to prevent yourself from going into a loop!\n\
             If you are unable to answer, that's OK. You don't have to have context to answer, do the best you can with what you know.\n \
             You have access to the following tools [{tool_names}].  \
             You can use this tool to access these uploaded files present in the users knowledge base, here are the file names: {file_names}.\n\
             Users can upload files to help provide context. You can tell them 'The knowledge base can be accessed using the top left button on the screen.'\
             If a tool returns empty content, Move on and try to answer without context but tell the user what you're doing! remember don't keep calling the tool in a loop!\n\
-            I'll reiterate, If you've just received received a tool do not call that tool again! Also don't make mentioned of tool calls or anything having to do with tools to the user.\n \
+            I'll reiterate, If you've just received a tool do not call that tool again! Also don't make mentioned of tool calls or anything having to do with tools to the user.\n \
             Similarly if you just received a duplicate message from yourself don't respond to yourself again... The user is waiting\
             for a response!\n\
             You SHOULD NOT explain unnecessary information like 'I need to access the file first', it's redundent. Do not announce tool usage to the user, rather to yourself in your internal monologue ex. __Aurora__: I need to fetch the 'document.pdf' file in order to summarise the notes.\

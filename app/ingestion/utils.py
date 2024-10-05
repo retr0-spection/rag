@@ -23,8 +23,7 @@ temp_dir = tempfile.mkdtemp()
 
 # MongoDB connection
 GROQ_API = get_settings().GROQ_API
-MONGO_DB = MONGO_DB_URL
-client = MongoClient(MONGO_DB)
+client = MongoClient(MONGO_DB_URL)
 db = client['document_db']
 HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-mpnet-base-v2"
 HUGGINGFACE_API_KEY = get_settings().HUGGINGFACE_API_KEY  # Make sure to add this to your settings

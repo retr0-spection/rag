@@ -32,8 +32,7 @@ def get_settings():
 
 
 DEBUG = int(get_settings().DEBUG)
-MONGO_DB_URL = get_settings().MONGO_DB if not DEBUG else get_settings().DEBUG_MONGO_DB
-
+MONGO_DB_URL = get_settings().DEBUG_MONGO_DB if DEBUG else get_settings().MONGO_DB
 if DEBUG:
     SQLALCHEMY_DATABASE_URL =  get_settings().DEBUG_DATABASE_URL
     engine = create_engine(
