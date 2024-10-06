@@ -154,6 +154,7 @@ class LLMNode:
 
         files = self.db.query(File).filter(File.owner_id == state['user_id']).all()
         file_names = [file.filename for file in files]
+        print(file_names)
 
 
 
@@ -327,6 +328,7 @@ def create_agent(model, system_message:str, memory, tools, db):
              This allows you to gradually build context which you can use in the next prompt to answer the users query. You are encourage to build up thought processes so try to use the __Aurora__ prefix. As a safe guard do not\
              send yourself three consecutive messages using the __Aurora__ prefix. This is to prevent yourself from going into a loop!\n\
             If you are unable to answer, that's OK. You don't have to have context to answer, do the best you can with what you know.\n \
+            Here are the files in the user's knowledge base [{file_names}]. You can fetch their contents using the tools you have.'\
             You have access to the following tools [{tool_names}].  \
             You SHOULD NOT explain unnecessary information like 'I need to access the file first', it's redundent. Do not announce tool usage to the user, rather to yourself in your internal monologue ex. __Aurora__: I need to fetch the 'document.pdf' file in order to summarise the notes.\
             Do not use the tool to fetch irrelevant files! This is a waste of time and resources, be mindful of the user's query. If it's not related to or makes not mention to the files, then don't fetch files.\
