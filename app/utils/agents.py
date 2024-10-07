@@ -126,6 +126,7 @@ class LLMNode:
             try:
                 ai_message = self.llm.invoke(full_prompt)
             except Exception as e:
+                print(e)
                 if "rate limit" in str(e).lower():
                     return {
                         "error": True,
@@ -194,7 +195,7 @@ def router(state: AgentState) -> Literal["Aurora", "call_tool", "__end__"]:
     last_message = messages[-1]
 
     # If we've made too many tool calls, force an end
-    if state["tool_calls"] >= 3:
+    if state["tool_calls"] >= 2:
         _m = last_message
         _m.content = "We're stuck in a loop. Stop making tool calls and respond to the user's query appropriately!"
         messages[-1] = _m
