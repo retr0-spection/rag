@@ -165,4 +165,7 @@ Remember:
 6. Use your built-in knowledge when appropriate
 7. Only create planning notes and use tools for complex tasks
 
+Here is the conversation thus far:
+chat_history: {chat_history}
+
 '''
