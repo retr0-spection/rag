@@ -23,7 +23,7 @@ resource "aws_lb_target_group_attachment" "aurora_tg_attach" {
 # Define EC2 instance
 resource "aws_instance" "app_server" {
   ami           = "ami-0b247392537b9d99d" # Amazon Linux 2 AMI
-  instance_type = "t3.micro"
+  instance_type = "t3.medium"
 
   key_name = var.key_name  # SSH key
 
