@@ -4,6 +4,8 @@ from bs4 import BeautifulSoup
 from typing import Dict, Union, Annotated
 from urllib.parse import urlencode
 from langchain_core.tools import tool
+from app.ingestion.utils import Ingestion
+
 
 
 @tool

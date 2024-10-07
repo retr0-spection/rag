@@ -112,9 +112,17 @@ def get_chat_history(session_id: int, db: Session = Depends(get_db)):
     # Fetch all messages in the session
     messages = db.query(Message).filter_by(session_id=session_id, hidden=False).order_by(Message.timestamp).all()
 
+    def strip_message(payload):
+        payload =  payload.content
+        if '__exit__' in payload:
+            return payload.split('__exit__')[1]
+        elif '__Aurora__' not in payload:
+            return payload
+
+
     return {
         "session_id": session_id,
-        "messages": [{"sender": msg.sender, "content": msg.content, "timestamp": msg.timestamp} for msg in messages]
+        "messages": [{"sender": msg.sender, "content": msg.content if msg.sender == "user" else strip_message(msg) , "timestamp": msg.timestamp} for msg in messages]
     }
 
 # Route to end a chat session

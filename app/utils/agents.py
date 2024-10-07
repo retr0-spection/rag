@@ -13,7 +13,6 @@ from langchain_core.tools import tool
 from fastapi import HTTPException, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime
-from app.ingestion.utils import Ingestion
 from app.database import get_db, get_settings
 from app.models.contexthistory import ContextHistory
 from app.models.models import Agent, Session as ChatSession, Message
@@ -84,7 +83,13 @@ class LLMNode:
         if isinstance(last_message, HumanMessage):
             state["tool_calls"] = 0
 
-        # Special handling for tool responses
+
+        chat_history = self.memory.load_memory_variables({}).get("chat_history", "")
+
+        files = self.db.query(File).filter(File.owner_id == state['user_id']).all()
+        file_names = [file.filename for file in files]
+
+
         if isinstance(last_message, ToolMessage):
             # Force the LLM to process the tool response before making any new tool calls
             forced_prompt = f"""
@@ -94,18 +99,9 @@ class LLMNode:
             If the information is sufficient, respond to the user.
             If you absolutely need another tool call, explain why.
             """
-
-
-        chat_history = self.memory.load_memory_variables({}).get("chat_history", "")
-
-        files = self.db.query(File).filter(File.owner_id == state['user_id']).all()
-        file_names = [file.filename for file in files]
-
-
-        if isinstance(last_message, ToolMessage):
             full_prompt = self.prompt.format(
                 query='',
-                ai_query="here's the tool response:" + last_message.content,
+                ai_query=forced_prompt,
                 file_names=file_names,
                 user_id=state['user_id'],
                 chat_history=chat_history
@@ -137,15 +133,15 @@ class LLMNode:
             if len(last_message.content):
                 self.store_message(state['session_id'], last_message.content, "user")
             if len(ai_message.content):
-                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content)
+                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content and "__exit__" not in ai_message.content)
         elif isinstance(last_message, ToolMessage):
             if len(last_message.content):
                 self.store_message(state['session_id'], last_message.content, "Tool", True)
             if len(ai_message.content):
-                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content)
+                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content and "__exit__" not in ai_message.content)
         elif state['sender'] == 'Aurora':
             if len(ai_message.content):
-                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content)
+                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content and "__exit__" not in ai_message.content)
 
 
         # Update memory
