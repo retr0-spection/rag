@@ -66,8 +66,10 @@ class AgentState(TypedDict):
     user_id: str
     session_id: int
     sender: str
-    current_agent: str  # New field to track the current agent
-    tool_calls: int  # Add a counter for tool calls
+    current_agent: str
+    tool_calls: int
+    error: bool  # New field to track error state
+    error_message: str  # New field to store error messages
 
 class LLMNode:
     def __init__(self, llm: ChatGroq, prompt: ChatPromptTemplate, memory: ConversationBufferWindowMemory, tools, db):
@@ -77,84 +79,105 @@ class LLMNode:
         self.db = db
 
     def __call__(self, state: AgentState) -> Dict:
-        messages = state['messages']
-        last_message = messages[-1]
-        # Reset tool calls counter when processing a user message
-        if isinstance(last_message, HumanMessage):
-            state["tool_calls"] = 0
+        try:
+            messages = state['messages']
+            last_message = messages[-1]
+            # Reset tool calls counter when processing a user message
+            if isinstance(last_message, HumanMessage):
+                state["tool_calls"] = 0
 
+            chat_history = self.memory.load_memory_variables({}).get("chat_history", "")
 
-        chat_history = self.memory.load_memory_variables({}).get("chat_history", "")
+            files = self.db.query(File).filter(File.owner_id == state['user_id']).all()
+            file_names = [file.filename for file in files]
 
-        files = self.db.query(File).filter(File.owner_id == state['user_id']).all()
-        file_names = [file.filename for file in files]
+            if isinstance(last_message, ToolMessage):
+                forced_prompt = f"""
+                A tool has returned the following response: {last_message.content}
 
+                Please process this response before considering any new tool calls.
+                If the information is sufficient, respond to the user.
+                If you absolutely need another tool call, explain why.
+                """
+                full_prompt = self.prompt.format(
+                    query='',
+                    ai_query=forced_prompt,
+                    file_names=file_names,
+                    user_id=state['user_id'],
+                    chat_history=chat_history
+                )
+            elif state['sender'] == 'user':
+                full_prompt = self.prompt.format(
+                    query=last_message.content,
+                    ai_query='',
+                    file_names=file_names,
+                    user_id=state['user_id'],
+                    chat_history=chat_history
+                )
+            else:
+                full_prompt = self.prompt.format(
+                    query='',
+                    ai_query=last_message.content,
+                    file_names=file_names,
+                    user_id=state['user_id'],
+                    chat_history=chat_history
+                )
 
-        if isinstance(last_message, ToolMessage):
-            # Force the LLM to process the tool response before making any new tool calls
-            forced_prompt = f"""
-            A tool has returned the following response: {last_message.content}
+            try:
+                ai_message = self.llm.invoke(full_prompt)
+            except Exception as e:
+                if "rate limit" in str(e).lower():
+                    return {
+                        "error": True,
+                        "error_message": "Rate limit exceeded. Please try again in a moment.",
+                        "messages": messages,
+                        "user_id": state['user_id'],
+                        "session_id": state['session_id'],
+                        "sender": "Aurora",
+                        "current_agent": "Aurora",
+                        "tool_calls": state['tool_calls']
+                    }
+                else:
+                    raise e
 
-            Please process this response before considering any new tool calls.
-            If the information is sufficient, respond to the user.
-            If you absolutely need another tool call, explain why.
-            """
-            full_prompt = self.prompt.format(
-                query='',
-                ai_query=forced_prompt,
-                file_names=file_names,
-                user_id=state['user_id'],
-                chat_history=chat_history
-            )
-        elif state['sender'] == 'user':
-            full_prompt = self.prompt.format(
-                query=last_message.content,
-                ai_query='',
-                file_names=file_names,
-                user_id=state['user_id'],
-                chat_history=chat_history
+            # Store the message
+            if state['sender'] == 'user':
+                if len(last_message.content):
+                    self.store_message(state['session_id'], last_message.content, "user")
+                if len(ai_message.content):
+                    self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content and "__exit__" not in ai_message.content)
+            elif isinstance(last_message, ToolMessage):
+                if len(last_message.content):
+                    self.store_message(state['session_id'], last_message.content, "Tool", True)
+                if len(ai_message.content):
+                    self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content and "__exit__" not in ai_message.content)
+            elif state['sender'] == 'Aurora':
+                if len(ai_message.content):
+                    self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content and "__exit__" not in ai_message.content)
 
-            )
-        else:
-            full_prompt = self.prompt.format(
-                query='',
-                ai_query=last_message.content,
-                file_names=file_names,
-                user_id=state['user_id'],
-                chat_history=chat_history
+            # Update memory
+            self.memory.save_context({"input": last_message.content}, {"output": ai_message.content})
 
-            )
-
-
-
-        ai_message = self.llm.invoke(full_prompt)
-        # Store the message
-        if state['sender'] == 'user':
-            if len(last_message.content):
-                self.store_message(state['session_id'], last_message.content, "user")
-            if len(ai_message.content):
-                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content and "__exit__" not in ai_message.content)
-        elif isinstance(last_message, ToolMessage):
-            if len(last_message.content):
-                self.store_message(state['session_id'], last_message.content, "Tool", True)
-            if len(ai_message.content):
-                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content and "__exit__" not in ai_message.content)
-        elif state['sender'] == 'Aurora':
-            if len(ai_message.content):
-                self.store_message(state['session_id'], ai_message.content, "AI", "__Aurora__" in ai_message.content and "__exit__" not in ai_message.content)
-
-
-        # Update memory
-        self.memory.save_context({"input": last_message.content}, {"output": ai_message.content})
-
-        return {
-            "messages": messages + [ai_message],
-            "user_id": state['user_id'],
-            "session_id": state['session_id'],
-            "sender": "Aurora",
-            "current_agent": "Aurora",
-            "tool_calls":state['tool_calls']
-        }
+            return {
+                "error": False,
+                "messages": messages + [ai_message],
+                "user_id": state['user_id'],
+                "session_id": state['session_id'],
+                "sender": "Aurora",
+                "current_agent": "Aurora",
+                "tool_calls": state['tool_calls']
+            }
+        except Exception as e:
+            return {
+                "error": True,
+                "error_message": f"An unexpected error occurred: {str(e)}",
+                "messages": messages,
+                "user_id": state['user_id'],
+                "session_id": state['session_id'],
+                "sender": "Aurora",
+                "current_agent": "Aurora",
+                "tool_calls": state['tool_calls']
+            }
 
     def store_message(self, session_id: int, content: str, sender: str, hidden:bool = False):
         new_message = Message(session_id=session_id, content=content, sender=sender, hidden=hidden)
@@ -162,21 +185,19 @@ class LLMNode:
         self.db.commit()
 
 
-def context_agent(state: AgentState) -> Tuple[AgentState, str]:
-    user_message = state['messages'][-1].content
-    # if needs_context(user_message):
-    #     return state, "fetch_context"
-    return state, "llm"
-
 def router(state: AgentState) -> Literal["Aurora", "call_tool", "__end__"]:
+    # First check for errors
+    if state.get("error", False):
+        return END  # Exit if there's an error
+
     messages = state["messages"]
     last_message = messages[-1]
 
     # If we've made too many tool calls, force an end
     if state["tool_calls"] >= 3:
         _m = last_message
-        _m['content'] = "We're stuck in a loop. Stop making tool calls and respond to the user's query appropriately!"
-        last_message[-1] =_m
+        _m.content = "We're stuck in a loop. Stop making tool calls and respond to the user's query appropriately!"
+        messages[-1] = _m
         return "Aurora"
 
     # Check if this is a tool response being processed
@@ -197,11 +218,11 @@ def router(state: AgentState) -> Literal["Aurora", "call_tool", "__end__"]:
 
 async def setup_langgraph_system(user, agent_config, session_id, db):
     llm = ChatGroq(
-           temperature=0,
-           groq_api_key=GROQ_API,
-           model_name=agent_config['llm'],
-           streaming=True
-       ).bind_tools(tools)
+        temperature=0,
+        groq_api_key=GROQ_API,
+        model_name=agent_config['llm'],
+        streaming=True
+    ).bind_tools(tools)
 
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     restore_memory_state(memory, session_id, db)
@@ -209,7 +230,6 @@ async def setup_langgraph_system(user, agent_config, session_id, db):
     llm_agent = create_agent(llm, agent_config['prompt'], memory, tools, db)
 
     llm_node = functools.partial(agent_node, agent=llm_agent, name="Aurora")
-
 
     # Setup workflow
     workflow = StateGraph(AgentState)
@@ -242,19 +262,27 @@ async def process_message(sys, message: str, user_id: str, session_id: int):
         session_id=session_id,
         sender="user",
         current_agent="Aurora",
-        tool_calls=0
-        # Start with Aurora as the default agent
+        tool_calls=0,
+        error=False,
+        error_message=""
     )
 
     async for chunk in sys.astream(initial_state):
         try:
-            payload =  chunk['Aurora']['messages'][-1].content
-            if '__exit__' in payload:
-                yield "__token__: " + payload.split('__exit__')[1]
-            elif '__Aurora__' not in payload:
-                yield "__token__: " + payload
-        except Exception:
-            pass
+            if 'Aurora' in chunk:
+                if chunk['Aurora'].get('error', False):
+                    yield f"__error__: {chunk['Aurora']['error_message']}"
+                    return
+
+                payload = chunk['Aurora']['messages'][-1].content
+                if '__exit__' in payload:
+                    yield "__token__: " + payload.split('__exit__')[1]
+                elif '__Aurora__' not in payload:
+                    yield "__token__: " + payload
+        except Exception as e:
+            yield f"__error__: An unexpected error occurred: {str(e)}"
+            return
+
 
 def restore_memory_state(memory, session_id, db):
     messages = db.query(Message).filter_by(session_id=session_id).order_by(Message.timestamp)
