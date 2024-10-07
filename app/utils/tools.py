@@ -1,10 +1,17 @@
-from typing import List, Dict
+from typing import List, Dict, Optional, Union, Any
 import requests
 from bs4 import BeautifulSoup
 from typing import Dict, Union, Annotated
 from urllib.parse import urlencode
 from langchain_core.tools import tool
 from app.ingestion.utils import Ingestion
+import subprocess
+import uuid
+import os
+import docker
+import traceback
+from docker.errors import ContainerError, ImageNotFound, APIError
+
 
 
 
@@ -176,6 +183,87 @@ def get_document_contents(document_name:Annotated[str, "Document name as seen in
 
     results = ingestion.get_document_chunks(document_name, user_id)
     return results if len(results) else "no contents or file found."
+
+
+@tool
+async def run_python_code_in_container(code: str, timeout: int = 120, packages: str = '') -> Dict[str, Any]:
+    """
+    Executes a piece of Python code in a Docker container.
+
+    Parameters:
+    - code: The Python code to execute as a string.
+    - timeout: Time in seconds to wait for the execution to finish. Default is 120 seconds.
+    - packages: A string of space-separated package names to install using pip.
+
+    Returns:
+    A dictionary containing:
+    - status: 'success' or 'error'
+    - output: The output of the code execution or error message
+    - error: Detailed error message if applicable
+    - code: The code that was executed
+    """
+    client = docker.from_env()
+    response = {
+        "status": "error",
+        "output": None,
+        "error": None,
+        "code": code
+    }
+
+    # Build the command to install packages if any are specified
+    install_command = f"pip install {packages} && " if packages else ""
+
+    try:
+        # Spin up the container
+        container = client.containers.run(
+            image="python:3.10-slim",
+            command=f"sh -c '{install_command} python -c \"{code.replace('\"', '\\\"')}\"'",
+            detach=True,
+            stdout=True,
+            stderr=True
+        )
+
+        # Wait for the container to finish executing or time out
+        result = container.wait(timeout=timeout)
+        logs = container.logs()
+
+        # If the container completed without issues
+        if result['StatusCode'] == 0:
+            response["status"] = "success"
+            response["output"] = logs.decode('utf-8').strip()
+        else:
+            response["error"] = f"Non-zero exit code: {result['StatusCode']}"
+            response["output"] = logs.decode('utf-8').strip()
+
+    except ContainerError as e:
+        response["error"] = f"Container error: {str(e)}"
+        if hasattr(e, 'stderr'):
+            response["output"] = e.stderr.decode('utf-8').strip() if e.stderr else "No error output available."
+        elif hasattr(e, 'stdout'):
+            response["output"] = e.stdout.decode('utf-8').strip() if e.stdout else "No standard output available."
+
+    except ImageNotFound as e:
+        response["error"] = "Image not found: " + str(e)
+
+    except APIError as e:
+        response["error"] = "Docker API error: " + str(e)
+
+    except Exception as e:
+        # Catch any other unforeseen errors
+        response["error"] = "Unexpected error: " + str(e)
+
+    finally:
+        # Ensure the container is stopped and removed
+        try:
+            container.stop()
+            container.remove()
+        except Exception as cleanup_error:
+            response["error"] = f"Cleanup error: {str(cleanup_error)}"
+
+        client.close()
+
+    return response
+
 
 # async def fetch_customer_context(query_str: Annotated[str, "User prompt"], user_id: Annotated[str, "user id"]) -> str:
 #     """Fetch internal resources and user documents that might be relevant to the query.

@@ -22,7 +22,7 @@ import asyncio
 from langsmith import traceable
 import functools
 from .config import mermaid_config, values, code_formatting
-from app.utils.tools import web_search_and_extract, get_document_contents
+from app.utils.tools import web_search_and_extract, get_document_contents, run_python_code_in_container
 from app.utils.prompt import aurora_prompt
 # Constants
 GROQ_API = get_settings().GROQ_API
@@ -30,7 +30,7 @@ FILE_MATCH_THRESHOLD = 0.6
 RELEVANCE_THRESHOLD = 0.15
 TAG_MATCH_THRESHOLD = 0.8
 
-tools = [get_document_contents, web_search_and_extract]
+tools = [get_document_contents, web_search_and_extract, run_python_code_in_container]
 tool_node = ToolNode(tools)
 def rank_and_combine_results(tag_matches: List[Dict], semantic_results: List[Dict]) -> List[Dict]:
     combined_results = []

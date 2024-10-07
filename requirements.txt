@@ -26,6 +26,7 @@ dataclasses-json==0.6.7
 Deprecated==1.2.14
 distro==1.9.0
 dnspython==2.6.1
+docker==7.1.0
 docx==0.2.4
 email_validator==2.2.0
 fastapi==0.115.0
