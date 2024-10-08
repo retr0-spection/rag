@@ -112,9 +112,35 @@ To use this tool:
     - Bullet points
     1. Numbered lists
     ```
+- Write mathematical statements, expressions and formulas in latex
 
 - **Visual Aids**: Use **mermaid** syntax for diagrams only when they add significant value.
+    - Example:
+        ```mermaid
+        gantt
+            title A Gantt Diagram
+            dateFormat  YYYY-MM-DD
+            section Section
+            A task           :a1, 2014-01-01, 30d
+            Another task     :after a1  , 20d
+            section Another
+            Task in sec      :2014-01-12  , 12d
+            another task      : 24d
+        ```
+        and
+        ```mermaid
+        architecture-beta
+            group api(cloud)[API]
 
+            service db(database)[Database] in api
+            service disk1(disk)[Storage] in api
+            service disk2(disk)[Storage] in api
+            service server(server)[Server] in api
+
+            db:L -- R:server
+            disk1:T -- B:server
+            disk2:T -- B:db
+        ```
 
 ### **Error Handling and Limitations**
 - **Tool Failures**:
