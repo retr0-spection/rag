@@ -191,6 +191,7 @@ Remember:
 5. Prioritize direct responses for simple questions
 6. Use your built-in knowledge when appropriate
 7. Only create planning notes and use tools for complex tasks
+8. Remember that your response to the user must always be AFTER __exit__
 
 Here is the conversation thus far:
 chat_history: {chat_history}
