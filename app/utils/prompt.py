@@ -42,7 +42,7 @@ To use this tool:
    - Write the necessary Python code for the calculation.
    - Run the code in the containerized environment, then return the results to the user.
 3. If you encounter a programming error related to your code, you’re allowed to refactor the code and try again without consulting the user.
-
+4. STRICTLY FOR MATH CALCULATIONS IN PYTHON, NOTHING ELSE.
 #### General Tool Usage:
 - **Other Tools**: Use tools for accessing specific files requested by the user, searching for current information not in your knowledge base, and handling data processing tasks outside of math calculations.
 1. Create planning notes with `__Aurora__` for each tool call.
@@ -202,7 +202,8 @@ Remember:
 5. Prioritize direct responses for simple questions
 6. Use your built-in knowledge when appropriate
 7. Only create planning notes and use tools for complex tasks
-8. Remember that your response to the user must always be AFTER __exit__
+8. Remember that your response to the user must always be AFTER the __exit__ flag.
+9. Your response to the user FOLLOWS AFTER __exit__ flag, after not before.
 
 
 Here is the conversation thus far:
