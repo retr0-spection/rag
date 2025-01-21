@@ -64,7 +64,7 @@ resource "aws_instance" "app_server" {
 # Associate an existing Elastic IP with the instance
 resource "aws_eip_association" "eip_assoc" {
   instance_id   = aws_instance.app_server.id
-  allocation_id = "eipalloc-0adaebc65e5e4e55b"  # Use your actual Elastic IP allocation ID
+  allocation_id = "eipalloc-025c035a9af16cd2d"  # Use your actual Elastic IP allocation ID
 }
 
 output "instance_ip" {
