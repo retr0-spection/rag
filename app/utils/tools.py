@@ -103,9 +103,6 @@ def search_for_links(query: str, num_results: int = 5) -> List[Dict[str, str]]:
     except requests.RequestException as e:
         return f"An error occurred during the web search: {e}"
 
-
-
-
 def extract_content(url: str) -> Dict[str, str]:
     """
     Extract content from a given webpage URL.
@@ -154,7 +151,7 @@ def extract_content(url: str) -> Dict[str, str]:
             content = "\n".join(p.get_text().strip() for p in paragraphs)
 
         # Truncate content if it's too long
-        max_length = 5000  # Adjust as needed
+        max_length = 3000  # Adjust as needed
         if len(content) > max_length:
             content = content[:max_length] + "..."
 
