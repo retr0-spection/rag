@@ -51,9 +51,9 @@ jobs:
         run: terraform init
         working-directory: infra/terraform # Path to Terraform files
 
-      - name: Remove TG
-        run: terraform state rm aws_lb_target_group.rag_tg
-        working-directory: infra/terraform
+      # - name: Remove TG
+      #   run: terraform state rm aws_lb_target_group.rag_tg
+      #   working-directory: infra/terraform
 
       - name: Terraform Import Existing Target Group
         run: terraform import aws_lb_target_group.rag_tg arn:aws:elasticloadbalancing:af-south-1:533266983761:targetgroup/RagTG/5e4ee283c15081b4 # Replace <target_group_arn> with the actual ARN
